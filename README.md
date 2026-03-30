@@ -1,17 +1,47 @@
-# SebianWhisper
-
 <p align="center">
-  <img src="./assets/mini-logo.png" alt="SebianWhisper Mini Logo" width="72" />
+  <img src="./assets/mini-logo.png" alt="SerbianWhisper Mini Logo" width="72" />
 </p>
 
 <p align="center">
-  <strong>Local-first audio transcription web app</strong><br/>
-  React + Vite frontend, FastAPI backend, Faster-Whisper transcription engine.
+  <img src="./assets/serbianwhisper-logo.jpg" alt="SerbianWhisper AI" width="720" />
+</p>
+
+<h1 align="center">SerbianWhisper AI</h1>
+
+<p align="center">
+  Local-first audio transcription platform with a React frontend, FastAPI backend, and Faster-Whisper inference.
 </p>
 
 <p align="center">
-  <img src="./assets/serbianwhisper-logo.jpg" alt="SebianWhisper Main Logo" width="620" />
+  <img src="https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white" alt="React" />
+  <img src="https://img.shields.io/badge/Build-Vite-646CFF?logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Language-Python-3776AB?logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/ASR-Faster--Whisper-111827" alt="Faster-Whisper" />
+  <img src="https://img.shields.io/badge/Inference-CPU%20Ready-22577A" alt="CPU Ready" />
 </p>
+
+## Product Overview
+
+SerbianWhisper AI is a production-minded MVP for speech-to-text transcription.
+It is designed for local development and testing, with clear separation between frontend and backend responsibilities.
+
+Core workflow:
+- Upload audio (or record from microphone) in the browser.
+- Send audio using `multipart/form-data` to the backend.
+- Transcribe with `faster-whisper` on the server.
+- Return and render full transcript + timestamped segments.
+
+## Key Capabilities
+
+- Reusable Whisper model instance (loaded once at backend startup)
+- Upload transcription and microphone transcription flows
+- Waveform timeline with segment markers and click-to-seek
+- Sticky transcript panel with active segment highlighting during playback
+- Light/Dark mode plus theme presets (`Mint`, `Studio`, `Classic`)
+- Word-level timestamps toggle
+- Export transcription as `TXT`, `SRT`, and `VTT`
+- Responsive UI with desktop and mobile navigation
 
 ## Screenshots
 
@@ -23,35 +53,28 @@
 
 ![History View](./assets/screenshots/ss2.png)
 
-## Overview
+## Architecture
 
-SebianWhisper is a minimal but production-minded MVP for audio transcription:
-- upload audio from browser
-- send file via `multipart/form-data` to backend
-- transcribe using `faster-whisper`
-- return and render full transcript + timestamped segments
+```mermaid
+flowchart LR
+  A[React + Vite Frontend] -->|multipart/form-data| B[FastAPI Backend]
+  B --> C[Temporary File Storage]
+  B --> D[faster-whisper WhisperModel]
+  D --> B
+  B -->|JSON response| A
+```
 
-The model runs only on the backend (never in the browser).
+## Technology Stack
 
-## Key Features
+| Layer | Technology |
+|---|---|
+| Frontend | React (JavaScript), Vite, Fetch API |
+| Backend | FastAPI, Uvicorn, Python |
+| Transcription | faster-whisper (`WhisperModel`) |
+| Audio transport | `multipart/form-data` |
+| Default inference mode | `model=small`, `device=cpu`, `compute_type=int8` |
 
-- FastAPI backend with reusable Whisper model instance (loaded once at startup)
-- React frontend with clean UI, menu, About page, and responsive mobile hamburger menu
-- Light/Dark theme with sun/moon icons
-- Loading card + spinner during transcription
-- Direct microphone recording page with save + transcription flow
-- Optional language input
-- Optional word-level timestamps
-- Segment-level timestamps always returned
-
-## Tech Stack
-
-- Frontend: React + Vite (JavaScript)
-- Backend: Python + FastAPI
-- Transcription: `faster-whisper` (`WhisperModel`)
-- Upload protocol: `multipart/form-data`
-
-## Project Structure
+## Repository Structure
 
 ```text
 SerbianWhisper/
@@ -78,25 +101,28 @@ SerbianWhisper/
 └── README.md
 ```
 
-## Backend Spec
+## API Specification
+
+### Health Check
 
 - `GET /health`
-- `POST /transcribe`
-- `POST /transcribe-microphone`
 
-`POST /transcribe` accepts:
+### File Transcription
+
+- `POST /transcribe`
+
+Form fields:
 - `file` (required)
 - `language` (optional, e.g. `sr`, `en`)
-- `word_timestamps` (optional, `true`/`false`)
+- `word_timestamps` (optional, `true` or `false`)
 
-Transcription settings:
-- model: `small` (default)
-- device: `cpu` (default)
-- compute type: `int8` (default)
-- `vad_filter=True`
-- `beam_size=5`
+### Microphone Transcription
 
-Response shape:
+- `POST /transcribe-microphone`
+
+Uses the same form fields as `/transcribe`.
+
+### Response Shape
 
 ```json
 {
@@ -121,21 +147,15 @@ Response shape:
 }
 ```
 
-`words` is returned only when `word_timestamps=true`.
+`words` is included only when `word_timestamps=true`.
 
-## Frontend Spec
+## Local Development Setup
 
-- Audio file picker
-- Optional language field
-- Word timestamps toggle
-- Submit to `POST /transcribe` using `fetch` + `FormData`
-- Render:
-  - detected language + confidence
-  - full transcript
-  - segment list with timestamps
-- Professional responsive UI (desktop + mobile)
+### Prerequisites
 
-## Local Setup (macOS)
+- Python `3.11` or `3.12`
+- Node.js `18+`
+- npm `9+`
 
 ### 1) Backend
 
@@ -160,7 +180,7 @@ npm run dev
 
 Frontend URL: `http://localhost:5173`
 
-## Example Request
+## Quick API Test
 
 ```bash
 curl -X POST "http://localhost:8000/transcribe" \
@@ -169,13 +189,25 @@ curl -X POST "http://localhost:8000/transcribe" \
   -F "word_timestamps=true"
 ```
 
+## macOS Notes
+
+- Start with CPU mode for local development:
+  - `model=small`
+  - `device=cpu`
+  - `compute_type=int8`
+- First transcription can be slower because model files are downloaded on first run.
+- Microphone recording requires browser permission.
+
 ## Troubleshooting
 
-- If frontend shows `Failed to fetch`, check backend is running at `http://localhost:8000`.
-- If backend crashes with missing package, reactivate venv and run `pip install -r requirements.txt`.
-- First transcription is slower (model download on first run).
-- Recommended for local Mac MVP: keep CPU defaults (`small`, `cpu`, `int8`).
+- `Failed to fetch` in frontend:
+  - Confirm backend is running on `http://localhost:8000`.
+  - Check frontend `API Base URL` setting.
+- Missing Python dependency error:
+  - Activate virtual environment and reinstall with `pip install -r requirements.txt`.
+- Python compatibility issues on newest interpreters:
+  - Prefer Python `3.11` or `3.12` for best package compatibility in local setup.
 
 ## Author
 
-**Dimitrije Milenkovic**
+Dimitrije Milenkovic
