@@ -4,16 +4,26 @@ import {
   FiDownload,
   FiLoader,
   FiMenu,
+  FiMic,
   FiMoon,
+  FiRotateCcw,
   FiSettings,
+  FiSquare,
   FiSun,
   FiX,
 } from "react-icons/fi";
 
 const DEFAULT_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const THEME_STORAGE_KEY = "sebianwhisper_theme";
+const THEME_PRESET_KEY = "sebianwhisper_theme_preset";
 const HISTORY_STORAGE_KEY = "sebianwhisper_history";
 const SETTINGS_STORAGE_KEY = "sebianwhisper_settings";
+const RECORDER_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+const THEME_PRESETS = [
+  { value: "mint", label: "Mint" },
+  { value: "studio", label: "Studio" },
+  { value: "classic", label: "Classic" },
+];
 const LANGUAGE_OPTIONS = [
   { value: "", label: "Auto detect" },
   { value: "sr", label: "Serbian (sr)" },
@@ -139,6 +149,7 @@ function loadSettings() {
     defaultLanguage: "",
     defaultWordTimestamps: false,
     apiBaseUrl: DEFAULT_API_BASE_URL,
+    themePreset: "mint",
   };
 
   try {
@@ -149,6 +160,10 @@ function loadSettings() {
       apiBaseUrl: typeof parsed.apiBaseUrl === "string" && parsed.apiBaseUrl.trim()
         ? parsed.apiBaseUrl.trim()
         : defaults.apiBaseUrl,
+      themePreset:
+        typeof parsed.themePreset === "string" && parsed.themePreset.trim()
+          ? parsed.themePreset.trim()
+          : defaults.themePreset,
     };
   } catch {
     return defaults;
@@ -172,14 +187,52 @@ function normalizeLanguage(value) {
   return LANGUAGE_OPTIONS.some((option) => option.value === safe) ? safe : "";
 }
 
+function normalizeThemePreset(value) {
+  const safe = typeof value === "string" ? value.trim() : "";
+  return THEME_PRESETS.some((preset) => preset.value === safe) ? safe : "mint";
+}
+
+function getSupportedRecorderMimeType() {
+  if (typeof MediaRecorder === "undefined") return "";
+
+  for (const candidate of RECORDER_MIME_TYPES) {
+    if (MediaRecorder.isTypeSupported(candidate)) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function getExtensionForMimeType(mimeType) {
+  const safe = (mimeType || "").toLowerCase();
+  if (safe.includes("ogg")) return "ogg";
+  if (safe.includes("mp4")) return "mp4";
+  if (safe.includes("mpeg")) return "mp3";
+  if (safe.includes("wav")) return "wav";
+  return "webm";
+}
+
 function App() {
   const initialSettings = useMemo(() => loadSettings(), []);
   const [activePage, setActivePage] = useState("transcribe");
   const [theme, setTheme] = useState(getInitialTheme);
+  const [themePreset, setThemePreset] = useState(
+    normalizeThemePreset(localStorage.getItem(THEME_PRESET_KEY) || initialSettings.themePreset)
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [audioFile, setAudioFile] = useState(null);
   const [audioPreviewUrl, setAudioPreviewUrl] = useState("");
+  const [recordedBlob, setRecordedBlob] = useState(null);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState("");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingError, setRecordingError] = useState("");
   const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0);
+  const [waveformBars, setWaveformBars] = useState([]);
+  const [waveformDuration, setWaveformDuration] = useState(0);
+  const [waveformLoading, setWaveformLoading] = useState(false);
+  const [waveformError, setWaveformError] = useState("");
   const [language, setLanguage] = useState(normalizeLanguage(initialSettings.defaultLanguage));
   const [wordTimestamps, setWordTimestamps] = useState(initialSettings.defaultWordTimestamps);
   const [apiBaseUrl, setApiBaseUrl] = useState(initialSettings.apiBaseUrl);
@@ -192,9 +245,25 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({
     ...initialSettings,
     defaultLanguage: normalizeLanguage(initialSettings.defaultLanguage),
+    themePreset: normalizeThemePreset(initialSettings.themePreset),
   });
   const [settingsMessage, setSettingsMessage] = useState("");
   const audioRef = useRef(null);
+  const recorderPreviewRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
+  const waveformCanvasRef = useRef(null);
+  const waveformContainerRef = useRef(null);
+
+  const microphoneSupported = useMemo(() => {
+    return Boolean(
+      typeof navigator !== "undefined" &&
+        navigator.mediaDevices &&
+        navigator.mediaDevices.getUserMedia &&
+        typeof MediaRecorder !== "undefined"
+    );
+  }, []);
 
   useEffect(() => {
     if (!selectedHistoryId && history.length > 0) {
@@ -208,6 +277,12 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    const normalized = normalizeThemePreset(themePreset);
+    document.documentElement.setAttribute("data-theme-preset", normalized);
+    localStorage.setItem(THEME_PRESET_KEY, normalized);
+  }, [themePreset]);
+
+  useEffect(() => {
     if (!audioFile) {
       setAudioPreviewUrl("");
       setCurrentPlaybackTime(0);
@@ -219,13 +294,42 @@ function App() {
     return () => URL.revokeObjectURL(objectUrl);
   }, [audioFile]);
 
+  useEffect(() => {
+    if (!recordedBlob) {
+      setRecordedAudioUrl("");
+      return;
+    }
+
+    const objectUrl = URL.createObjectURL(recordedBlob);
+    setRecordedAudioUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [recordedBlob]);
+
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        window.clearInterval(recordingTimerRef.current);
+      }
+
+      if (mediaRecorderRef.current && mediaRecorderRef.current.stream) {
+        mediaRecorderRef.current.stream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, []);
+
   const canSubmit = useMemo(() => Boolean(audioFile) && !loading, [audioFile, loading]);
+  const canTranscribeRecording = useMemo(() => Boolean(recordedBlob) && !isRecording && !loading, [recordedBlob, isRecording, loading]);
   const ThemeIcon = theme === "dark" ? FiSun : FiMoon;
   const themeLabel = theme === "dark" ? "Light Theme" : "Dark Theme";
 
   const selectedHistory = useMemo(() => {
     return history.find((entry) => entry.id === selectedHistoryId) || null;
   }, [history, selectedHistoryId]);
+
+  const activeResultAudioUrl = useMemo(() => {
+    if (!result) return "";
+    return result.source === "microphone" ? recordedAudioUrl : audioPreviewUrl;
+  }, [result, recordedAudioUrl, audioPreviewUrl]);
 
   const activeSegmentIndex = useMemo(() => {
     if (!result?.segments?.length) return -1;
@@ -243,6 +347,145 @@ function App() {
 
     return -1;
   }, [currentPlaybackTime, result]);
+
+  useEffect(() => {
+    if (!activeResultAudioUrl) {
+      setWaveformBars([]);
+      setWaveformDuration(0);
+      setWaveformError("");
+      return;
+    }
+
+    let cancelled = false;
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+    async function buildWaveform() {
+      setWaveformLoading(true);
+      setWaveformError("");
+
+      try {
+        const response = await fetch(activeResultAudioUrl);
+        const buffer = await response.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(buffer.slice(0));
+
+        if (cancelled) return;
+
+        const data = audioBuffer.getChannelData(0);
+        const bucketCount = 240;
+        const blockSize = Math.max(1, Math.floor(data.length / bucketCount));
+        const bars = new Array(bucketCount).fill(0);
+
+        for (let i = 0; i < bucketCount; i += 1) {
+          let peak = 0;
+          const start = i * blockSize;
+          const end = Math.min(start + blockSize, data.length);
+
+          for (let j = start; j < end; j += 1) {
+            const value = Math.abs(data[j]);
+            if (value > peak) {
+              peak = value;
+            }
+          }
+          bars[i] = peak;
+        }
+
+        const maxPeak = Math.max(...bars, 0.001);
+        const normalizedBars = bars.map((value) => value / maxPeak);
+
+        setWaveformBars(normalizedBars);
+        setWaveformDuration(audioBuffer.duration || 0);
+      } catch {
+        if (!cancelled) {
+          setWaveformBars([]);
+          setWaveformDuration(0);
+          setWaveformError("Waveform prikaz nije dostupan za ovaj audio.");
+        }
+      } finally {
+        if (!cancelled) {
+          setWaveformLoading(false);
+        }
+      }
+    }
+
+    buildWaveform();
+
+    return () => {
+      cancelled = true;
+      audioContext.close().catch(() => {});
+    };
+  }, [activeResultAudioUrl]);
+
+  useEffect(() => {
+    const canvas = waveformCanvasRef.current;
+    const container = waveformContainerRef.current;
+    if (!canvas || !container || waveformBars.length === 0) return;
+
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const draw = () => {
+      const ratio = window.devicePixelRatio || 1;
+      const width = container.clientWidth;
+      const height = 132;
+
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+
+      const styles = getComputedStyle(document.documentElement);
+      const borderColor = styles.getPropertyValue("--border").trim() || "rgba(34, 87, 122, 0.2)";
+      const accentColor = styles.getPropertyValue("--c2").trim() || "#38a3a5";
+      const accentMuted = styles.getPropertyValue("--text-muted").trim() || "#5d7788";
+      const segmentColor = styles.getPropertyValue("--c3").trim() || "#57cc99";
+      const activeSegmentColor = styles.getPropertyValue("--c1").trim() || "#22577a";
+
+      context.clearRect(0, 0, width, height);
+
+      const progressRatio = waveformDuration > 0 ? Math.min(1, Math.max(0, currentPlaybackTime / waveformDuration)) : 0;
+      const barWidth = width / waveformBars.length;
+
+      for (let i = 0; i < waveformBars.length; i += 1) {
+        const value = waveformBars[i];
+        const x = i * barWidth;
+        const normalized = Math.max(0.06, value);
+        const barHeight = normalized * (height - 24);
+        const y = (height - barHeight) / 2;
+        const played = x / width <= progressRatio;
+
+        context.fillStyle = played ? accentColor : accentMuted;
+        context.globalAlpha = played ? 0.85 : 0.35;
+        context.fillRect(x + 0.9, y, Math.max(1.4, barWidth - 1.8), barHeight);
+      }
+
+      context.globalAlpha = 1;
+      context.strokeStyle = borderColor;
+      context.lineWidth = 1;
+      context.strokeRect(0.5, 0.5, width - 1, height - 1);
+
+      if (Array.isArray(result?.segments) && waveformDuration > 0) {
+        result.segments.forEach((segment, index) => {
+          const markerX = (segment.start / waveformDuration) * width;
+          context.beginPath();
+          context.moveTo(markerX, 6);
+          context.lineTo(markerX, height - 6);
+          context.lineWidth = activeSegmentIndex === index ? 2.2 : 1.2;
+          context.strokeStyle = activeSegmentIndex === index ? activeSegmentColor : segmentColor;
+          context.globalAlpha = activeSegmentIndex === index ? 0.95 : 0.55;
+          context.stroke();
+        });
+      }
+
+      context.globalAlpha = 1;
+    };
+
+    draw();
+    const observer = new ResizeObserver(() => draw());
+    observer.observe(container);
+
+    return () => observer.disconnect();
+  }, [waveformBars, waveformDuration, currentPlaybackTime, result, activeSegmentIndex, theme, themePreset]);
 
   function toggleTheme() {
     setTheme((curr) => (curr === "dark" ? "light" : "dark"));
@@ -300,18 +543,37 @@ function App() {
   }
 
   function jumpToSegment(start) {
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = Math.max(0, Number(start) || 0);
-    audioRef.current.play().catch(() => {});
+    const preferredRef =
+      result?.source === "microphone" ? recorderPreviewRef.current : audioRef.current;
+    const player = preferredRef || audioRef.current || recorderPreviewRef.current;
+    if (!player) return;
+
+    player.currentTime = Math.max(0, Number(start) || 0);
+    player.play().catch(() => {});
   }
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (!audioFile) {
-      setError("Prvo izaberi audio fajl.");
-      return;
-    }
+  function handleWaveformSeek(event) {
+    if (!waveformDuration) return;
 
+    const canvas = waveformCanvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const offsetX = Math.min(Math.max(event.clientX - rect.left, 0), rect.width);
+    const ratio = rect.width > 0 ? offsetX / rect.width : 0;
+    const targetTime = ratio * waveformDuration;
+
+    const preferredRef = result?.source === "microphone" ? recorderPreviewRef.current : audioRef.current;
+    const player = preferredRef || audioRef.current || recorderPreviewRef.current;
+    if (!player) return;
+
+    player.currentTime = targetTime;
+    setCurrentPlaybackTime(targetTime);
+    player.play().catch(() => {});
+  }
+
+  async function submitTranscriptionFile(fileToTranscribe, options = {}) {
+    const endpoint = options.fromMicrophone ? "/transcribe-microphone" : "/transcribe";
     const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const createdAt = new Date().toISOString();
 
@@ -319,10 +581,11 @@ function App() {
       [
         {
           id: jobId,
-          fileName: audioFile.name,
+          fileName: fileToTranscribe.name,
           status: "uploading",
           createdAt,
           updatedAt: createdAt,
+          source: options.fromMicrophone ? "microphone" : "upload",
         },
         ...prev,
       ].slice(0, 40)
@@ -336,14 +599,14 @@ function App() {
       updateJob(jobId, { status: "transcribing", updatedAt: new Date().toISOString() });
 
       const formData = new FormData();
-      formData.append("file", audioFile);
+      formData.append("file", fileToTranscribe);
       formData.append("word_timestamps", String(wordTimestamps));
 
       if (language.trim()) {
         formData.append("language", language.trim());
       }
 
-      const response = await fetch(`${apiBaseUrl}/transcribe`, {
+      const response = await fetch(`${apiBaseUrl}${endpoint}`, {
         method: "POST",
         body: formData,
       });
@@ -358,9 +621,10 @@ function App() {
         ...normalized,
         id: `tr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         createdAt: new Date().toISOString(),
-        fileName: audioFile.name,
+        fileName: fileToTranscribe.name,
         requestedLanguage: language.trim() || null,
         usedWordTimestamps: wordTimestamps,
+        source: options.fromMicrophone ? "microphone" : "upload",
       };
 
       setResult(finalRecord);
@@ -382,20 +646,266 @@ function App() {
     }
   }
 
+  async function handleSubmit(event) {
+    event.preventDefault();
+    if (!audioFile) {
+      setError("Prvo izaberi audio fajl.");
+      return;
+    }
+
+    await submitTranscriptionFile(audioFile);
+  }
+
+  async function startRecording() {
+    if (!microphoneSupported) {
+      setRecordingError("Browser ne podrzava snimanje mikrofona.");
+      return;
+    }
+
+    try {
+      setRecordingError("");
+      setError("");
+      setRecordedBlob(null);
+      setRecordingSeconds(0);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = getSupportedRecorderMimeType();
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+
+      recordingChunksRef.current = [];
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordingChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const finalMime = recorder.mimeType || "audio/webm";
+        const finalBlob = new Blob(recordingChunksRef.current, { type: finalMime });
+        setRecordedBlob(finalBlob.size ? finalBlob : null);
+        setIsRecording(false);
+
+        if (recordingTimerRef.current) {
+          window.clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+
+        stream.getTracks().forEach((track) => track.stop());
+      };
+
+      recorder.onerror = () => {
+        setRecordingError("Doslo je do greske tokom snimanja.");
+      };
+
+      recorder.start(200);
+      setIsRecording(true);
+      recordingTimerRef.current = window.setInterval(() => {
+        setRecordingSeconds((seconds) => seconds + 1);
+      }, 1000);
+    } catch {
+      setRecordingError("Pristup mikrofonu nije dozvoljen ili nije dostupan.");
+    }
+  }
+
+  function stopRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    }
+  }
+
+  async function transcribeRecordedAudio() {
+    if (!recordedBlob) {
+      setRecordingError("Nema snimljenog audio zapisa.");
+      return;
+    }
+
+    const extension = getExtensionForMimeType(recordedBlob.type);
+    const file = new File([recordedBlob], `mic-recording-${Date.now()}.${extension}`, {
+      type: recordedBlob.type || "audio/webm",
+    });
+
+    await submitTranscriptionFile(file, { fromMicrophone: true });
+  }
+
+  function restartRecordingSession() {
+    if (recordingTimerRef.current) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onerror = null;
+      recorder.onstop = null;
+
+      if (recorder.stream) {
+        recorder.stream.getTracks().forEach((track) => track.stop());
+      }
+
+      if (recorder.state !== "inactive") {
+        try {
+          recorder.stop();
+        } catch {
+          // Ignore stop errors on restart.
+        }
+      }
+
+      mediaRecorderRef.current = null;
+    }
+
+    recordingChunksRef.current = [];
+    setIsRecording(false);
+    setRecordingSeconds(0);
+    setRecordedBlob(null);
+    setRecordedAudioUrl("");
+    setRecordingError("");
+    setCurrentPlaybackTime(0);
+    setError("");
+
+    if (recorderPreviewRef.current) {
+      recorderPreviewRef.current.pause();
+      recorderPreviewRef.current.currentTime = 0;
+    }
+
+    if (result?.source === "microphone") {
+      setResult(null);
+    }
+  }
+
   function handleSettingsSave(event) {
     event.preventDefault();
     const clean = {
       defaultLanguage: normalizeLanguage(settingsForm.defaultLanguage),
       defaultWordTimestamps: Boolean(settingsForm.defaultWordTimestamps),
       apiBaseUrl: settingsForm.apiBaseUrl.trim() || DEFAULT_API_BASE_URL,
+      themePreset: normalizeThemePreset(settingsForm.themePreset),
     };
 
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(clean));
     setApiBaseUrl(clean.apiBaseUrl);
     setLanguage(clean.defaultLanguage);
     setWordTimestamps(clean.defaultWordTimestamps);
+    setThemePreset(clean.themePreset);
     setSettingsForm(clean);
     setSettingsMessage("Settings su sacuvane.");
+  }
+
+  function renderTranscriptionResult() {
+    if (!result) return null;
+
+    return (
+      <section className="results reveal delay-2">
+        <div className="card metrics">
+          <div className="metric-item">
+            <p>Detektovan jezik</p>
+            <strong>{result.detected_language || "nepoznat"}</strong>
+          </div>
+          <div className="metric-item">
+            <p>Pouzdanost</p>
+            <strong>
+              {typeof result.language_probability === "number"
+                ? `${(result.language_probability * 100).toFixed(1)}%`
+                : "n/a"}
+            </strong>
+          </div>
+          <div className="metric-item">
+            <p>Segmenti</p>
+            <strong>{Array.isArray(result.segments) ? result.segments.length : 0}</strong>
+          </div>
+        </div>
+
+        <div className="results-layout">
+          <div className="results-main">
+            <div className="card waveform-card">
+              <div className="title-row">
+                <h2>Waveform timeline</h2>
+                <span className="wave-time">
+                  {formatTime(currentPlaybackTime)} /{" "}
+                  {formatTime(waveformDuration || result.segments?.[result.segments.length - 1]?.end || 0)}
+                </span>
+              </div>
+              <p className="wave-help">Klikni na talasnu liniju za brzi skok na deo snimka.</p>
+              <div className="waveform-wrap" ref={waveformContainerRef}>
+                {waveformLoading ? (
+                  <div className="waveform-placeholder">
+                    <FiLoader className="inline-spin" /> Ucitavam waveform...
+                  </div>
+                ) : null}
+                {!waveformLoading && waveformError ? (
+                  <div className="waveform-placeholder">{waveformError}</div>
+                ) : null}
+                {!waveformLoading && !waveformError && waveformBars.length > 0 ? (
+                  <canvas ref={waveformCanvasRef} className="waveform-canvas" onClick={handleWaveformSeek} />
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <aside className="results-sticky">
+            <div className="card sticky-transcript">
+              <div className="title-row">
+                <h2>Kompletan transkript</h2>
+                <div className="export-actions">
+                  <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "txt")}>
+                    <FiDownload /> TXT
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "srt")}>
+                    <FiDownload /> SRT
+                  </button>
+                  <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "vtt")}>
+                    <FiDownload /> VTT
+                  </button>
+                </div>
+              </div>
+              <p className="transcript-text">{result.text || "(prazan transkript)"}</p>
+
+              <h2>Vremenski segmenti</h2>
+              {Array.isArray(result.segments) && result.segments.length > 0 ? (
+                <ul className="segments">
+                  {result.segments.map((segment, index) => (
+                    <li
+                      key={`${segment.start}-${segment.end}-${index}`}
+                      className={
+                        activeSegmentIndex === index ? "clickable-segment active-segment" : "clickable-segment"
+                      }
+                      onClick={() => jumpToSegment(segment.start)}
+                    >
+                      <div className="segment-meta">
+                        <span>{formatTime(segment.start)}</span>
+                        <span>{formatTime(segment.end)}</span>
+                      </div>
+                      <p>{segment.text}</p>
+                      {Array.isArray(segment.words) && segment.words.length > 0 ? (
+                        <div className="word-grid">
+                          {segment.words.map((word, wordIndex) => (
+                            <span key={`${word.start}-${word.end}-${wordIndex}`}>
+                              {word.word.trim()} ({formatTime(word.start)})
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>Nema dostupnih segmenata.</p>
+              )}
+            </div>
+          </aside>
+        </div>
+      </section>
+    );
   }
 
   return (
@@ -427,6 +937,13 @@ function App() {
                 type="button"
               >
                 Transkripcija
+              </button>
+              <button
+                className={activePage === "recording" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("recording")}
+                type="button"
+              >
+                Snimanje
               </button>
               <button
                 className={activePage === "history" ? "menu-btn active" : "menu-btn"}
@@ -493,7 +1010,7 @@ function App() {
                     id="audio-file"
                     type="file"
                     accept="audio/*"
-                    onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
+                    onChange={(event) => setAudioFile(event.target.files?.[0] || null)}
                   />
                   <span className="upload-title">
                     {audioFile ? audioFile.name : "Prevuci ili izaberi audio fajl"}
@@ -505,11 +1022,7 @@ function App() {
               <div className="input-row">
                 <div className="field">
                   <label htmlFor="language">Kod jezika (opciono)</label>
-                  <select
-                    id="language"
-                    value={language}
-                    onChange={(e) => setLanguage(e.target.value)}
-                  >
+                  <select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
                     {LANGUAGE_OPTIONS.map((option) => (
                       <option key={option.value || "auto"} value={option.value}>
                         {option.label}
@@ -563,79 +1076,136 @@ function App() {
             ) : null}
 
             {error ? <p className="error reveal">{error}</p> : null}
+            {result?.source !== "microphone" ? renderTranscriptionResult() : null}
+          </section>
+        ) : null}
 
-            {result ? (
-              <section className="results reveal delay-2">
-                <div className="card metrics">
-                  <div className="metric-item">
-                    <p>Detektovan jezik</p>
-                    <strong>{result.detected_language || "nepoznat"}</strong>
-                  </div>
-                  <div className="metric-item">
-                    <p>Pouzdanost</p>
-                    <strong>
-                      {typeof result.language_probability === "number"
-                        ? `${(result.language_probability * 100).toFixed(1)}%`
-                        : "n/a"}
-                    </strong>
-                  </div>
-                  <div className="metric-item">
-                    <p>Segmenti</p>
-                    <strong>{Array.isArray(result.segments) ? result.segments.length : 0}</strong>
-                  </div>
+        {activePage === "recording" ? (
+          <section className="panel reveal">
+            <div className="card recording-card">
+              <div className="recording-head">
+                <div>
+                  <h1>Studio snimanje</h1>
+                  <p className="recording-intro">
+                    Snimi glas direktno iz browsera i odmah transkribuj bez dodatnog upload koraka.
+                  </p>
                 </div>
-
-                <div className="card">
-                  <div className="title-row">
-                    <h2>Kompletan transkript</h2>
-                    <div className="export-actions">
-                      <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "txt")}>
-                        <FiDownload /> TXT
-                      </button>
-                      <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "srt")}>
-                        <FiDownload /> SRT
-                      </button>
-                      <button type="button" className="ghost-btn" onClick={() => exportTranscript(result, "vtt")}>
-                        <FiDownload /> VTT
-                      </button>
-                    </div>
-                  </div>
-                  <p className="transcript-text">{result.text || "(prazan transkript)"}</p>
+                <div className="recording-status-wrap">
+                  <span className={isRecording ? "recording-status on" : "recording-status"}>
+                    {isRecording ? "Snimanje: ON" : "Snimanje: OFF"}
+                  </span>
+                  <span className={isRecording ? "recording-timer live" : "recording-timer"}>
+                    {formatTime(recordingSeconds)}
+                  </span>
                 </div>
+              </div>
 
-                <div className="card">
-                  <h2>Vremenski segmenti</h2>
-                  {Array.isArray(result.segments) && result.segments.length > 0 ? (
-                    <ul className="segments">
-                      {result.segments.map((segment, index) => (
-                        <li
-                          key={`${segment.start}-${segment.end}-${index}`}
-                          className={activeSegmentIndex === index ? "clickable-segment active-segment" : "clickable-segment"}
-                          onClick={() => jumpToSegment(segment.start)}
-                        >
-                          <div className="segment-meta">
-                            <span>{formatTime(segment.start)}</span>
-                            <span>{formatTime(segment.end)}</span>
-                          </div>
-                          <p>{segment.text}</p>
-                          {Array.isArray(segment.words) && segment.words.length > 0 ? (
-                            <div className="word-grid">
-                              {segment.words.map((word, wordIndex) => (
-                                <span key={`${word.start}-${word.end}-${wordIndex}`}>
-                                  {word.word.trim()} ({formatTime(word.start)})
-                                </span>
-                              ))}
-                            </div>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
+              <div className={isRecording ? "recording-visualizer live" : "recording-visualizer"}>
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+                <span />
+              </div>
+
+              <div className="recording-controls">
+                <button
+                  type="button"
+                  className={isRecording ? "ghost-btn" : "primary-btn"}
+                  onClick={startRecording}
+                  disabled={isRecording || !microphoneSupported}
+                >
+                  <FiMic /> Start snimanja
+                </button>
+                <button type="button" className="ghost-btn" onClick={stopRecording} disabled={!isRecording}>
+                  <FiSquare /> Stop
+                </button>
+                <button type="button" className="ghost-btn" onClick={restartRecordingSession} disabled={loading}>
+                  <FiRotateCcw /> Restart
+                </button>
+                <button
+                  type="button"
+                  className="primary-btn"
+                  onClick={transcribeRecordedAudio}
+                  disabled={!canTranscribeRecording}
+                >
+                  {loading ? (
+                    <>
+                      <FiLoader className="inline-spin" /> Transkribujem...
+                    </>
                   ) : (
-                    <p>Nema dostupnih segmenata.</p>
+                    "Sacuvaj i transkribuj"
                   )}
+                </button>
+              </div>
+
+              <div className="recording-meta compact">
+                <span>Duzina: {formatTime(recordingSeconds)}</span>
+                <span>Jezik: {language || "auto"}</span>
+              </div>
+
+              <div className="input-row">
+                <div className="field">
+                  <label htmlFor="recording-language">Kod jezika (opciono)</label>
+                  <select
+                    id="recording-language"
+                    value={language}
+                    onChange={(event) => setLanguage(event.target.value)}
+                  >
+                    {LANGUAGE_OPTIONS.map((option) => (
+                      <option key={`recording-${option.value || "auto"}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              </section>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={wordTimestamps}
+                  className={wordTimestamps ? "toggle-control on" : "toggle-control"}
+                  onClick={() => setWordTimestamps((current) => !current)}
+                >
+                  <span className="toggle-track">
+                    <span className="toggle-thumb" />
+                  </span>
+                  <span className="toggle-text">Word timestamps</span>
+                </button>
+              </div>
+
+              {!microphoneSupported ? (
+                <p className="error">Tvoj browser ne podrzava MediaRecorder API.</p>
+              ) : null}
+
+              {recordingError ? <p className="error">{recordingError}</p> : null}
+            </div>
+
+            {recordedAudioUrl ? (
+              <div className="card audio-card reveal">
+                <h3>Snimljeni audio</h3>
+                <audio
+                  ref={recorderPreviewRef}
+                  controls
+                  src={recordedAudioUrl}
+                  onTimeUpdate={(event) => setCurrentPlaybackTime(event.currentTarget.currentTime)}
+                />
+              </div>
             ) : null}
+
+            {loading ? (
+              <div className="card loading-card reveal">
+                <FiLoader className="spinner-icon" />
+                <div>
+                  <h3>Transkripcija snimka je u toku</h3>
+                  <p>Obrada ce automatski prikazati rezultat ispod cim se zavrsi.</p>
+                </div>
+              </div>
+            ) : null}
+
+            {error ? <p className="error reveal">{error}</p> : null}
+            {result?.source === "microphone" ? renderTranscriptionResult() : null}
           </section>
         ) : null}
 
@@ -766,10 +1336,10 @@ function App() {
                   id="settings-api-url"
                   type="text"
                   value={settingsForm.apiBaseUrl}
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setSettingsForm((prev) => ({
                       ...prev,
-                      apiBaseUrl: e.target.value,
+                      apiBaseUrl: event.target.value,
                     }))
                   }
                   placeholder="http://localhost:8000"
@@ -781,10 +1351,10 @@ function App() {
                 <select
                   id="settings-language"
                   value={settingsForm.defaultLanguage}
-                  onChange={(e) =>
+                  onChange={(event) =>
                     setSettingsForm((prev) => ({
                       ...prev,
-                      defaultLanguage: e.target.value,
+                      defaultLanguage: event.target.value,
                     }))
                   }
                 >
@@ -794,6 +1364,28 @@ function App() {
                     </option>
                   ))}
                 </select>
+              </div>
+
+              <div className="field">
+                <label>Tema paleta</label>
+                <div className="preset-grid">
+                  {THEME_PRESETS.map((preset) => (
+                    <button
+                      type="button"
+                      key={preset.value}
+                      className={settingsForm.themePreset === preset.value ? "preset-btn active" : "preset-btn"}
+                      onClick={() => {
+                        setThemePreset(preset.value);
+                        setSettingsForm((prev) => ({
+                          ...prev,
+                          themePreset: preset.value,
+                        }));
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <button

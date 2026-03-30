@@ -39,6 +39,7 @@ The model runs only on the backend (never in the browser).
 - React frontend with clean UI, menu, About page, and responsive mobile hamburger menu
 - Light/Dark theme with sun/moon icons
 - Loading card + spinner during transcription
+- Direct microphone recording page with save + transcription flow
 - Optional language input
 - Optional word-level timestamps
 - Segment-level timestamps always returned
@@ -81,6 +82,7 @@ SerbianWhisper/
 
 - `GET /health`
 - `POST /transcribe`
+- `POST /transcribe-microphone`
 
 `POST /transcribe` accepts:
 - `file` (required)

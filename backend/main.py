@@ -28,6 +28,15 @@ app.add_middleware(
 
 model: Optional[WhisperModel] = None
 
+MIME_SUFFIX_MAP = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mp4": ".mp4",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+
 
 @app.on_event("startup")
 def load_model() -> None:
@@ -50,16 +59,27 @@ def health() -> dict:
     }
 
 
-@app.post("/transcribe")
-async def transcribe(
-    file: UploadFile = File(...),
-    language: Optional[str] = Form(default=None),
-    word_timestamps: bool = Form(default=False),
-) -> dict:
+def _resolve_suffix(file: UploadFile) -> str:
+    explicit = Path(file.filename or "").suffix
+    if explicit:
+        return explicit
+
+    content_type = (file.content_type or "").lower()
+    if content_type in MIME_SUFFIX_MAP:
+        return MIME_SUFFIX_MAP[content_type]
+
+    base_type = content_type.split(";")[0].strip()
+    if base_type in MIME_SUFFIX_MAP:
+        return MIME_SUFFIX_MAP[base_type]
+
+    return ".webm"
+
+
+async def _transcribe_upload(file: UploadFile, language: Optional[str], word_timestamps: bool) -> dict:
     if model is None:
         raise HTTPException(status_code=503, detail="Model is not loaded yet.")
 
-    suffix = Path(file.filename or "upload").suffix
+    suffix = _resolve_suffix(file)
     temp_path: Optional[str] = None
 
     try:
@@ -113,3 +133,29 @@ async def transcribe(
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
         await file.close()
+
+
+@app.post("/transcribe")
+async def transcribe(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(default=None),
+    word_timestamps: bool = Form(default=False),
+) -> dict:
+    return await _transcribe_upload(
+        file=file,
+        language=language,
+        word_timestamps=word_timestamps,
+    )
+
+
+@app.post("/transcribe-microphone")
+async def transcribe_microphone(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(default=None),
+    word_timestamps: bool = Form(default=False),
+) -> dict:
+    return await _transcribe_upload(
+        file=file,
+        language=language,
+        word_timestamps=word_timestamps,
+    )

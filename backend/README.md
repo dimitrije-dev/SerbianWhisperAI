@@ -24,12 +24,22 @@ API base URL: `http://localhost:8000`
 
 - `GET /health`
 - `POST /transcribe`
+- `POST /transcribe-microphone`
 
 ## Example request
 
 ```bash
 curl -X POST "http://localhost:8000/transcribe" \
   -F "file=@/absolute/path/to/audio.mp3" \
+  -F "language=sr" \
+  -F "word_timestamps=true"
+```
+
+Microphone recording request example:
+
+```bash
+curl -X POST "http://localhost:8000/transcribe-microphone" \
+  -F "file=@/absolute/path/to/recording.webm" \
   -F "language=sr" \
   -F "word_timestamps=true"
 ```
