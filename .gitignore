@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Python
+backend/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Environment files
+.env
+.env.*
