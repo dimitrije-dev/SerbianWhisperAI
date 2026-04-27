@@ -33,6 +33,7 @@ backend/.venv/bin/python -m pytest -q backend/tests/test_ai_qwen_pipeline.py
 Detailed report:
 - `../TEST_REPORT_AI_QWEN.md`
 - `../TEST_REPORT_METRICS_KPI.md`
+- `../TEST_REPORT_TURBO_COMPARISON.md`
 
 KPI metrics smoke:
 
@@ -56,7 +57,8 @@ backend/.venv/bin/python backend/tests/print_metrics_demo.py
 curl -X POST "http://localhost:8000/transcribe" \
   -F "file=@/absolute/path/to/audio.mp3" \
   -F "language=sr" \
-  -F "word_timestamps=true"
+  -F "word_timestamps=true" \
+  -F "transcription_model=small"
 ```
 
 Microphone recording request example:
@@ -65,7 +67,8 @@ Microphone recording request example:
 curl -X POST "http://localhost:8000/transcribe-microphone" \
   -F "file=@/absolute/path/to/recording.webm" \
   -F "language=sr" \
-  -F "word_timestamps=true"
+  -F "word_timestamps=true" \
+  -F "transcription_model=turbo"
 ```
 
 Discharge draft request example:
@@ -118,6 +121,8 @@ curl -X POST "http://localhost:8000/transcript-corrections?fallback_noop=true" \
 
 ```json
 {
+  "model_used": "small",
+  "model_name": "small",
   "detected_language": "sr",
   "language_probability": 0.98,
   "text": "Full transcript text...",
@@ -139,7 +144,8 @@ curl -X POST "http://localhost:8000/transcript-corrections?fallback_noop=true" \
 }
 ```
 
-`words` is included only when `word_timestamps=true`.
+`words` is included only when `word_timestamps=true`.  
+`transcription_model` accepts: `small`, `turbo`.
 
 `/discharge-draft` returns a rule-based demo JSON structure with editable fields for an otpusna lista draft.
 
@@ -154,6 +160,8 @@ If Ollama is unavailable and `fallback_to_rules=true`, backend automatically ret
 ## Config (optional env vars)
 
 - `WHISPER_MODEL` (default: `small`)
+- `WHISPER_TURBO_MODEL` (default: `large-v3-turbo`)
+- `WHISPER_DEFAULT_TRANSCRIPTION_MODEL` (default: `small`)
 - `WHISPER_DEVICE` (default: `cpu`)
 - `WHISPER_COMPUTE_TYPE` (default: `int8`)
 - `OLLAMA_ENABLED` (default: `true`)

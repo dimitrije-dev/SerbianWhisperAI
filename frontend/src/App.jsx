@@ -21,6 +21,18 @@ const HISTORY_STORAGE_KEY = "sebianwhisper_history";
 const SETTINGS_STORAGE_KEY = "sebianwhisper_settings";
 const DISCHARGE_ENGINE_STORAGE_KEY = "sebianwhisper_discharge_engine";
 const RECORDER_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+const TRANSCRIPTION_MODEL_OPTIONS = [
+  {
+    value: "small",
+    label: "Small",
+    subtitle: "Faster start, CPU-friendly",
+  },
+  {
+    value: "turbo",
+    label: "Large-v3 Turbo",
+    subtitle: "Higher quality, heavier model",
+  },
+];
 const THEME_PRESETS = [
   { value: "mint", label: "Mint" },
   { value: "studio", label: "Studio" },
@@ -115,6 +127,8 @@ function normalizeResponse(raw) {
     : [];
 
   return {
+    model_used: raw?.model_used || "small",
+    model_name: raw?.model_name || "",
     detected_language: raw?.detected_language || "",
     language_probability:
       typeof raw?.language_probability === "number"
@@ -150,6 +164,7 @@ function loadSettings() {
   const defaults = {
     defaultLanguage: "",
     defaultWordTimestamps: false,
+    defaultTranscriptionModel: "small",
     apiBaseUrl: DEFAULT_API_BASE_URL,
     themePreset: "mint",
   };
@@ -159,6 +174,10 @@ function loadSettings() {
     return {
       defaultLanguage: typeof parsed.defaultLanguage === "string" ? parsed.defaultLanguage : defaults.defaultLanguage,
       defaultWordTimestamps: Boolean(parsed.defaultWordTimestamps),
+      defaultTranscriptionModel:
+        typeof parsed.defaultTranscriptionModel === "string"
+          ? normalizeTranscriptionModel(parsed.defaultTranscriptionModel)
+          : defaults.defaultTranscriptionModel,
       apiBaseUrl: typeof parsed.apiBaseUrl === "string" && parsed.apiBaseUrl.trim()
         ? parsed.apiBaseUrl.trim()
         : defaults.apiBaseUrl,
@@ -187,6 +206,11 @@ function downloadFile(filename, content, type) {
 function normalizeLanguage(value) {
   const safe = typeof value === "string" ? value.trim() : "";
   return LANGUAGE_OPTIONS.some((option) => option.value === safe) ? safe : "";
+}
+
+function normalizeTranscriptionModel(value) {
+  const safe = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return TRANSCRIPTION_MODEL_OPTIONS.some((option) => option.value === safe) ? safe : "small";
 }
 
 function normalizeThemePreset(value) {
@@ -291,6 +315,9 @@ function App() {
   const [waveformError, setWaveformError] = useState("");
   const [language, setLanguage] = useState(normalizeLanguage(initialSettings.defaultLanguage));
   const [wordTimestamps, setWordTimestamps] = useState(initialSettings.defaultWordTimestamps);
+  const [transcriptionModel, setTranscriptionModel] = useState(
+    normalizeTranscriptionModel(initialSettings.defaultTranscriptionModel)
+  );
   const [apiBaseUrl, setApiBaseUrl] = useState(initialSettings.apiBaseUrl);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -322,6 +349,7 @@ function App() {
   const [settingsForm, setSettingsForm] = useState({
     ...initialSettings,
     defaultLanguage: normalizeLanguage(initialSettings.defaultLanguage),
+    defaultTranscriptionModel: normalizeTranscriptionModel(initialSettings.defaultTranscriptionModel),
     themePreset: normalizeThemePreset(initialSettings.themePreset),
   });
   const [settingsMessage, setSettingsMessage] = useState("");
@@ -430,6 +458,10 @@ function App() {
 
   const canSubmit = useMemo(() => Boolean(audioFile) && !loading, [audioFile, loading]);
   const canTranscribeRecording = useMemo(() => Boolean(recordedBlob) && !isRecording && !loading, [recordedBlob, isRecording, loading]);
+  const selectedTranscriptionModel = useMemo(
+    () => TRANSCRIPTION_MODEL_OPTIONS.find((option) => option.value === transcriptionModel) || TRANSCRIPTION_MODEL_OPTIONS[0],
+    [transcriptionModel]
+  );
   const ThemeIcon = theme === "dark" ? FiSun : FiMoon;
   const themeLabel = theme === "dark" ? "Light Theme" : "Dark Theme";
 
@@ -724,6 +756,7 @@ function App() {
       const formData = new FormData();
       formData.append("file", fileToTranscribe);
       formData.append("word_timestamps", String(wordTimestamps));
+      formData.append("transcription_model", transcriptionModel);
 
       if (language.trim()) {
         formData.append("language", language.trim());
@@ -747,6 +780,8 @@ function App() {
         fileName: fileToTranscribe.name,
         requestedLanguage: language.trim() || null,
         usedWordTimestamps: wordTimestamps,
+        usedTranscriptionModel: normalized.model_used || transcriptionModel,
+        usedTranscriptionModelName: normalized.model_name || "",
         source: options.fromMicrophone ? "microphone" : "upload",
       };
 
@@ -911,6 +946,7 @@ function App() {
     const clean = {
       defaultLanguage: normalizeLanguage(settingsForm.defaultLanguage),
       defaultWordTimestamps: Boolean(settingsForm.defaultWordTimestamps),
+      defaultTranscriptionModel: normalizeTranscriptionModel(settingsForm.defaultTranscriptionModel),
       apiBaseUrl: settingsForm.apiBaseUrl.trim() || DEFAULT_API_BASE_URL,
       themePreset: normalizeThemePreset(settingsForm.themePreset),
     };
@@ -919,6 +955,7 @@ function App() {
     setApiBaseUrl(clean.apiBaseUrl);
     setLanguage(clean.defaultLanguage);
     setWordTimestamps(clean.defaultWordTimestamps);
+    setTranscriptionModel(clean.defaultTranscriptionModel);
     setThemePreset(clean.themePreset);
     setSettingsForm(clean);
     setSettingsMessage("Settings su sacuvane.");
@@ -1046,6 +1083,10 @@ function App() {
     return (
       <section className="results reveal delay-2">
         <div className="card metrics">
+          <div className="metric-item">
+            <p>Model</p>
+            <strong>{result.model_used || result.usedTranscriptionModel || "small"}</strong>
+          </div>
           <div className="metric-item">
             <p>Detektovan jezik</p>
             <strong>{result.detected_language || "nepoznat"}</strong>
@@ -1266,7 +1307,9 @@ function App() {
                       <span>Audit workflow</span>
                     </div>
                     <div className="clinical-summary">
-                      <span>Transkripcija: faster-whisper (small, CPU int8)</span>
+                      <span>
+                        Transkripcija: {selectedTranscriptionModel.label} ({selectedTranscriptionModel.subtitle})
+                      </span>
                       <span>Dokument: lokalni demo generator otpusne liste</span>
                     </div>
                   </div>
@@ -1287,6 +1330,22 @@ function App() {
                       </span>
                       <span className="upload-help">Podrzano: mp3, wav, m4a, ogg i ostali formati</span>
                     </label>
+                  </div>
+
+                  <div className="field">
+                    <label>Faster-Whisper model</label>
+                    <div className="preset-grid">
+                      {TRANSCRIPTION_MODEL_OPTIONS.map((option) => (
+                        <button
+                          type="button"
+                          key={`transcribe-model-${option.value}`}
+                          className={transcriptionModel === option.value ? "preset-btn active" : "preset-btn"}
+                          onClick={() => setTranscriptionModel(option.value)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="input-row">
@@ -1377,6 +1436,10 @@ function App() {
                       <strong>{microphoneSupported ? "Dostupan" : "Nije dostupan"}</strong>
                     </article>
                     <article>
+                      <p>Model</p>
+                      <strong>{selectedTranscriptionModel.label}</strong>
+                    </article>
+                    <article>
                       <p>Aktivni jezik</p>
                       <strong>{language || "Auto detect"}</strong>
                     </article>
@@ -1431,6 +1494,22 @@ function App() {
                       <div className="recording-meta compact">
                         <span>Duzina snimka: {formatTime(recordingSeconds)}</span>
                         <span>Jezik: {language || "auto"}</span>
+                      </div>
+
+                      <div className="field">
+                        <label>Faster-Whisper model</label>
+                        <div className="preset-grid">
+                          {TRANSCRIPTION_MODEL_OPTIONS.map((option) => (
+                            <button
+                              type="button"
+                              key={`recording-model-${option.value}`}
+                              className={transcriptionModel === option.value ? "preset-btn active" : "preset-btn"}
+                              onClick={() => setTranscriptionModel(option.value)}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="input-row recording-options">
@@ -1805,6 +1884,7 @@ function App() {
                           <strong>{item.fileName || "Audio file"}</strong>
                           <span>{formatDate(item.createdAt)}</span>
                           <span className="history-lang">Jezik: {item.detected_language || "auto"}</span>
+                          <span className="history-lang">Model: {item.model_used || item.usedTranscriptionModel || "small"}</span>
                           <p>{item.text?.slice(0, 120) || "(prazno)"}...</p>
                         </button>
                       ))
@@ -1944,6 +2024,27 @@ function App() {
                   </div>
 
                   <div className="field">
+                    <label>Podrazumevani model transkripcije</label>
+                    <div className="preset-grid">
+                      {TRANSCRIPTION_MODEL_OPTIONS.map((option) => (
+                        <button
+                          type="button"
+                          key={`settings-model-${option.value}`}
+                          className={settingsForm.defaultTranscriptionModel === option.value ? "preset-btn active" : "preset-btn"}
+                          onClick={() =>
+                            setSettingsForm((prev) => ({
+                              ...prev,
+                              defaultTranscriptionModel: option.value,
+                            }))
+                          }
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="field">
                     <label>Tema paleta</label>
                     <div className="preset-grid">
                       {THEME_PRESETS.map((preset) => (
@@ -2026,7 +2127,7 @@ function App() {
                     <article className="about-item">
                       <h3>Modeli</h3>
                       <ul className="about-list">
-                        <li>faster-whisper WhisperModel: small</li>
+                        <li>faster-whisper WhisperModel: small + large-v3-turbo</li>
                         <li>Inferencija: CPU + int8 quantization</li>
                         <li>VAD filter + beam size 5</li>
                         <li>Rule-based local discharge draft engine</li>

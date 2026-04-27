@@ -43,6 +43,7 @@ class DummyWhisperModel:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
+        self.variant = "turbo" if "turbo" in model_name.lower() else "small"
 
     def transcribe(
         self,
@@ -60,7 +61,7 @@ class DummyWhisperModel:
             DummySegment(
                 start=0.0,
                 end=2.8,
-                text="Pacijent je primljen zbog bola u grudima.",
+                text=f"[{self.variant}] Pacijent je primljen zbog bola u grudima.",
                 words=[
                     DummyWord(0.0, 0.4, "Pacijent", 0.96),
                     DummyWord(0.4, 0.55, "je", 0.98),
@@ -96,7 +97,8 @@ class FakeHTTPResponse:
 
 @pytest.fixture(autouse=True)
 def _reset_globals() -> None:
-    api.model = None
+    api.models = {}
+    api.model_load_errors = {}
 
 
 @pytest.fixture
@@ -117,12 +119,39 @@ def test_transcribe_serializes_segments_and_words(client: TestClient) -> None:
     assert response.status_code == 200
     payload = response.json()
 
+    assert payload["model_used"] == "small"
     assert payload["detected_language"] == "sr"
     assert isinstance(payload["language_probability"], float)
-    assert "Pacijent je primljen" in payload["text"]
+    assert "[small] Pacijent je primljen" in payload["text"]
     assert len(payload["segments"]) == 2
     assert "words" in payload["segments"][0]
     assert payload["segments"][0]["words"][0]["word"] == "Pacijent"
+
+
+def test_transcribe_supports_turbo_model(client: TestClient) -> None:
+    response = client.post(
+        "/transcribe",
+        files={"file": ("sample.wav", b"RIFFFAKEAUDIO", "audio/wav")},
+        data={"language": "sr", "word_timestamps": "false", "transcription_model": "turbo"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["model_used"] == "turbo"
+    assert "large-v3-turbo" in payload["model_name"]
+    assert payload["text"].startswith("[turbo]")
+
+
+def test_transcribe_rejects_invalid_model_value(client: TestClient) -> None:
+    response = client.post(
+        "/transcribe",
+        files={"file": ("sample.wav", b"RIFFFAKEAUDIO", "audio/wav")},
+        data={"language": "sr", "word_timestamps": "false", "transcription_model": "ultra"},
+    )
+
+    assert response.status_code == 400
+    assert "Invalid transcription_model" in response.json()["detail"]
 
 
 def test_qwen_transcript_corrections_via_chat_endpoint(

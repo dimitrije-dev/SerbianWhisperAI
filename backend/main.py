@@ -15,9 +15,13 @@ from faster_whisper import WhisperModel
 from pydantic import BaseModel, Field
 
 
-MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
+SMALL_MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
+TURBO_MODEL_NAME = os.getenv("WHISPER_TURBO_MODEL", "large-v3-turbo")
 MODEL_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 MODEL_COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
+DEFAULT_TRANSCRIPTION_MODEL = os.getenv("WHISPER_DEFAULT_TRANSCRIPTION_MODEL", "small").strip().lower()
+if DEFAULT_TRANSCRIPTION_MODEL not in {"small", "turbo"}:
+    DEFAULT_TRANSCRIPTION_MODEL = "small"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b-instruct")
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "90"))
@@ -109,7 +113,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model: Optional[WhisperModel] = None
+models: dict[str, WhisperModel] = {}
+model_load_errors: dict[str, str] = {}
 
 MIME_SUFFIX_MAP = {
     "audio/webm": ".webm",
@@ -822,24 +827,78 @@ def _build_ai_discharge_draft(payload: DischargeDraftRequest) -> dict[str, Any]:
     }
 
 
+def _normalize_requested_model(value: Optional[str]) -> str:
+    candidate = (value or "").strip().lower()
+    if not candidate:
+        return DEFAULT_TRANSCRIPTION_MODEL
+    if candidate in {"small", "turbo"}:
+        return candidate
+    raise HTTPException(
+        status_code=400,
+        detail="Invalid transcription_model. Use 'small' or 'turbo'.",
+    )
+
+
+def _runtime_model_name(model_key: str) -> str:
+    if model_key == "turbo":
+        return TURBO_MODEL_NAME
+    return SMALL_MODEL_NAME
+
+
+def _get_runtime_model_or_503(model_key: str) -> WhisperModel:
+    runtime_model = models.get(model_key)
+    if runtime_model is not None:
+        return runtime_model
+
+    load_error = model_load_errors.get(model_key)
+    if load_error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model '{model_key}' is unavailable: {load_error}",
+        )
+
+    raise HTTPException(status_code=503, detail=f"Model '{model_key}' is not loaded yet.")
+
+
 @app.on_event("startup")
 def load_model() -> None:
-    global model
-    model = WhisperModel(
-        MODEL_NAME,
+    global models
+    global model_load_errors
+
+    models = {}
+    model_load_errors = {}
+
+    models["small"] = WhisperModel(
+        SMALL_MODEL_NAME,
         device=MODEL_DEVICE,
         compute_type=MODEL_COMPUTE_TYPE,
     )
 
+    try:
+        models["turbo"] = WhisperModel(
+            TURBO_MODEL_NAME,
+            device=MODEL_DEVICE,
+            compute_type=MODEL_COMPUTE_TYPE,
+        )
+    except Exception as exc:
+        model_load_errors["turbo"] = str(exc)
+
 
 @app.get("/health")
 def health() -> dict:
+    supported_models = {
+        "small": SMALL_MODEL_NAME,
+        "turbo": TURBO_MODEL_NAME,
+    }
     return {
         "status": "ok",
-        "model_name": MODEL_NAME,
+        "default_transcription_model": DEFAULT_TRANSCRIPTION_MODEL,
+        "supported_models": supported_models,
         "device": MODEL_DEVICE,
         "compute_type": MODEL_COMPUTE_TYPE,
-        "model_loaded": model is not None,
+        "model_loaded": bool(models.get("small")),
+        "loaded_models": sorted(models.keys()),
+        "model_load_errors": model_load_errors,
         "ollama_enabled": OLLAMA_ENABLED,
         "ollama_base_url": OLLAMA_BASE_URL,
         "ollama_model": OLLAMA_MODEL,
@@ -862,9 +921,14 @@ def _resolve_suffix(file: UploadFile) -> str:
     return ".webm"
 
 
-async def _transcribe_upload(file: UploadFile, language: Optional[str], word_timestamps: bool) -> dict:
-    if model is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded yet.")
+async def _transcribe_upload(
+    file: UploadFile,
+    language: Optional[str],
+    word_timestamps: bool,
+    transcription_model: Optional[str],
+) -> dict:
+    selected_model = _normalize_requested_model(transcription_model)
+    runtime_model = _get_runtime_model_or_503(selected_model)
 
     suffix = _resolve_suffix(file)
     temp_path: Optional[str] = None
@@ -880,7 +944,7 @@ async def _transcribe_upload(file: UploadFile, language: Optional[str], word_tim
 
         transcription_target = temp_path
         try:
-            segments, info = model.transcribe(
+            segments, info = runtime_model.transcribe(
                 transcription_target,
                 language=language or None,
                 word_timestamps=word_timestamps,
@@ -918,7 +982,7 @@ async def _transcribe_upload(file: UploadFile, language: Optional[str], word_tim
                     f"{conversion_result.stderr.strip()[:800]}"
                 ) from first_exc
 
-            segments, info = model.transcribe(
+            segments, info = runtime_model.transcribe(
                 converted_path,
                 language=language or None,
                 word_timestamps=word_timestamps,
@@ -951,6 +1015,8 @@ async def _transcribe_upload(file: UploadFile, language: Optional[str], word_tim
             serialized_segments.append(payload)
 
         return {
+            "model_used": selected_model,
+            "model_name": _runtime_model_name(selected_model),
             "detected_language": info.language,
             "language_probability": info.language_probability,
             "text": " ".join(part.strip() for part in full_text_parts if part.strip()),
@@ -973,11 +1039,13 @@ async def transcribe(
     file: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     word_timestamps: bool = Form(default=False),
+    transcription_model: Optional[str] = Form(default=DEFAULT_TRANSCRIPTION_MODEL),
 ) -> dict:
     return await _transcribe_upload(
         file=file,
         language=language,
         word_timestamps=word_timestamps,
+        transcription_model=transcription_model,
     )
 
 
@@ -986,11 +1054,13 @@ async def transcribe_microphone(
     file: UploadFile = File(...),
     language: Optional[str] = Form(default=None),
     word_timestamps: bool = Form(default=False),
+    transcription_model: Optional[str] = Form(default=DEFAULT_TRANSCRIPTION_MODEL),
 ) -> dict:
     return await _transcribe_upload(
         file=file,
         language=language,
         word_timestamps=word_timestamps,
+        transcription_model=transcription_model,
     )
 
 

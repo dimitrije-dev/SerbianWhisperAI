@@ -47,6 +47,7 @@ Aplikacija je pripremljena kao demo za bolnički UI scenario i radi bez cloud se
 ## Ključne funkcije
 
 - jedinstven startup loading Whisper modela (`small`, `cpu`, `int8`)
+- izbor modela u UI (`small` ili `large-v3-turbo`)
 - audio upload + direktno mikrofonsko snimanje
 - waveform timeline sa markerima segmenata
 - sticky transcript panel + auto-highlight aktivnog segmenta
@@ -102,11 +103,14 @@ flowchart LR
 curl -X POST "http://localhost:8000/transcribe" \
   -F "file=@/absolute/path/to/audio.mp3" \
   -F "language=sr" \
-  -F "word_timestamps=true"
+  -F "word_timestamps=true" \
+  -F "transcription_model=turbo"
 ```
 
 ```json
 {
+  "model_used": "turbo",
+  "model_name": "large-v3-turbo",
   "detected_language": "sr",
   "language_probability": 0.98,
   "text": "Pacijent je primljen zbog...",
@@ -129,6 +133,7 @@ curl -X POST "http://localhost:8000/transcribe" \
 ```
 
 Napomena: polje `words` se vraća samo kada je `word_timestamps=true`.
+Dozvoljene vrednosti za `transcription_model` su `small` i `turbo`.
 
 ## Lokalno pokretanje
 
@@ -189,6 +194,8 @@ Ako Ollama nije aktivan, koristi `Rule-based` režim za draft.
 | Varijabla | Default | Opis |
 |---|---|---|
 | `WHISPER_MODEL` | `small` | naziv faster-whisper modela |
+| `WHISPER_TURBO_MODEL` | `large-v3-turbo` | naziv turbo modela |
+| `WHISPER_DEFAULT_TRANSCRIPTION_MODEL` | `small` | podrazumevani model (`small` ili `turbo`) |
 | `WHISPER_DEVICE` | `cpu` | uređaj za inferenciju |
 | `WHISPER_COMPUTE_TYPE` | `int8` | compute tip |
 | `OLLAMA_ENABLED` | `true` | uključivanje Ollama integracije |
@@ -209,6 +216,7 @@ Za prezentaciju je dostupan izveštaj:
 - [TEST_REPORT_PRESENTATION.md](./TEST_REPORT_PRESENTATION.md)
 - [TEST_REPORT_AI_QWEN.md](./TEST_REPORT_AI_QWEN.md)
 - [TEST_REPORT_METRICS_KPI.md](./TEST_REPORT_METRICS_KPI.md)
+- [TEST_REPORT_TURBO_COMPARISON.md](./TEST_REPORT_TURBO_COMPARISON.md)
 
 Automatski AI/Qwen test paket:
 
