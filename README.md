@@ -207,6 +207,21 @@ Ako Ollama nije aktivan, koristi `Rule-based` režim za draft.
 Za prezentaciju je dostupan izveštaj:
 
 - [TEST_REPORT_PRESENTATION.md](./TEST_REPORT_PRESENTATION.md)
+- [TEST_REPORT_AI_QWEN.md](./TEST_REPORT_AI_QWEN.md)
+- [TEST_REPORT_METRICS_KPI.md](./TEST_REPORT_METRICS_KPI.md)
+
+Automatski AI/Qwen test paket:
+
+```bash
+backend/.venv/bin/python -m pytest -q backend/tests/test_ai_qwen_pipeline.py
+```
+
+KPI metrika test paket (WER/CER/confidence):
+
+```bash
+backend/.venv/bin/python -m pytest -q backend/tests/test_transcription_metrics.py
+backend/.venv/bin/python backend/tests/print_metrics_demo.py
+```
 
 ## Troubleshooting
 

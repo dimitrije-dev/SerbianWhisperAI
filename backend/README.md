@@ -20,6 +20,27 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 API base URL: `http://localhost:8000`
 
+## 3) Testing (AI + Qwen + faster-whisper flow)
+
+```bash
+cd backend
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+cd ..
+backend/.venv/bin/python -m pytest -q backend/tests/test_ai_qwen_pipeline.py
+```
+
+Detailed report:
+- `../TEST_REPORT_AI_QWEN.md`
+- `../TEST_REPORT_METRICS_KPI.md`
+
+KPI metrics smoke:
+
+```bash
+backend/.venv/bin/python -m pytest -q backend/tests/test_transcription_metrics.py
+backend/.venv/bin/python backend/tests/print_metrics_demo.py
+```
+
 ## Endpoints
 
 - `GET /health`
