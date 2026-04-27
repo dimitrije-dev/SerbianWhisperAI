@@ -1,83 +1,233 @@
 <p align="center">
-  <img src="./assets/mini-logo.png" alt="SerbianWhisper Mini Logo" width="72" />
+  <img src="./assets/mini-logo.png" alt="SerbianWhisper Mini Logo" width="74" />
 </p>
 
 <p align="center">
-  <img src="./assets/serbianwhisper-logo.jpg" alt="SerbianWhisper AI" width="720" />
+  <img src="./assets/serbianwhisper-logo.jpg" alt="SerbianWhisper AI" width="760" />
 </p>
 
-<h1 align="center">SerbianWhisper AI</h1>
+<h1 align="center">SerbianWhisper Clinical Assistant</h1>
 
 <p align="center">
-  Local-first audio transcription platform with a React frontend, FastAPI backend, and Faster-Whisper inference.
+  Local-first demo platforma za medicinsku transkripciju i automatsko formiranje nacrta otpusne liste.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white" alt="React" />
   <img src="https://img.shields.io/badge/Build-Vite-646CFF?logo=vite&logoColor=white" alt="Vite" />
   <img src="https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/Language-Python-3776AB?logo=python&logoColor=white" alt="Python" />
-  <img src="https://img.shields.io/badge/ASR-Faster--Whisper-111827" alt="Faster-Whisper" />
-  <img src="https://img.shields.io/badge/Inference-CPU%20Ready-22577A" alt="CPU Ready" />
+  <img src="https://img.shields.io/badge/Transcription-faster--whisper-111827" alt="faster-whisper" />
+  <img src="https://img.shields.io/badge/LLM-Ollama%20(Qwen)-4B5563" alt="Ollama" />
+  <img src="https://img.shields.io/badge/Runtime-CPU%20First-22577A" alt="CPU First" />
 </p>
 
-## Product Overview
+## O projektu
 
-SerbianWhisper AI is a production-minded MVP for speech-to-text transcription.
-It is designed for local development and testing, with clear separation between frontend and backend responsibilities.
+SerbianWhisper Clinical Assistant je lokalna web aplikacija koja pokriva ceo tok rada:
 
-Core workflow:
-- Upload audio (or record from microphone) in the browser.
-- Send audio using `multipart/form-data` to the backend.
-- Transcribe with `faster-whisper` on the server.
-- Return and render full transcript + timestamped segments.
+- upload audio fajla ili direktno snimanje preko mikrofona,
+- transkripciju sa `faster-whisper`,
+- pregled segmenta sa timestamp markerima,
+- AI korekciju transkripta,
+- generisanje draft otpusne liste u `AI` ili `Rule-based` režimu.
 
-## Key Capabilities
+Aplikacija je pripremljena kao demo za bolnički UI scenario i radi bez cloud servisa.
 
-- Reusable Whisper model instance (loaded once at backend startup)
-- Upload transcription and microphone transcription flows
-- Waveform timeline with segment markers and click-to-seek
-- Sticky transcript panel with active segment highlighting during playback
-- Light/Dark mode plus theme presets (`Mint`, `Studio`, `Classic`)
-- Word-level timestamps toggle
-- Export transcription as `TXT`, `SRT`, and `VTT`
-- Free local demo generator for `Otpusna lista` (`POST /discharge-draft`)
-- Local LLM otpusna lista draft (`POST /discharge-draft-ai`) via Ollama with rule fallback
-- AI transcript proofreading with correction suggestions (`POST /transcript-corrections`)
-- Responsive UI with desktop and mobile navigation
+## Trenutni workflow
+
+1. Frontend šalje audio na backend (`/transcribe` ili `/transcribe-microphone`) kao `multipart/form-data`.
+2. Backend koristi globalni `WhisperModel` koji se učitava jednom pri startup-u.
+3. Odgovor vraća: detektovani jezik, pouzdanost jezika, kompletan tekst i segmente.
+4. Opcionalno se pokreće AI korekcija (`/transcript-corrections`) radi pravopisnih/logičkih ispravki.
+5. U modulu za otpusnu listu korisnik bira engine:
+   - `AI model` (`/discharge-draft-ai`)
+   - `Rule-based` (`/discharge-draft`)
+6. Draft se prikazuje kao jedan celovit dokument spreman za ručnu medicinsku validaciju.
+
+## Ključne funkcije
+
+- jedinstven startup loading Whisper modela (`small`, `cpu`, `int8`)
+- audio upload + direktno mikrofonsko snimanje
+- waveform timeline sa markerima segmenata
+- sticky transcript panel + auto-highlight aktivnog segmenta
+- light/dark + theme presets (`Mint`, `Studio`, `Classic`)
+- export transkripta (`TXT`, `SRT`, `VTT`)
+- lokalna istorija transkripata i jobs pregled
+- AI korekcija transkripta (sa fallback-om)
+- AI ili rule-based generisanje draft otpusne liste
 
 ## Screenshots
 
-### Transcription View
+### Transkripcija
 
-![Transcription View](./assets/screenshots/ss1.png)
+![Transkripcija UI](./assets/screenshots/ss1.png)
 
-### History View
+### Istorija
 
-![History View](./assets/screenshots/ss2.png)
+![Istorija UI](./assets/screenshots/ss2.png)
 
-## Architecture
+## Arhitektura
 
 ```mermaid
 flowchart LR
   A[React + Vite Frontend] -->|multipart/form-data| B[FastAPI Backend]
-  B --> C[Temporary File Storage]
-  B --> D[faster-whisper WhisperModel]
-  D --> B
-  B -->|JSON response| A
+  B --> C[faster-whisper WhisperModel]
+  C --> B
+  B -->|JSON transcript| A
+  A --> D[/transcript-corrections]
+  A --> E{Discharge Engine}
+  E -->|AI| F[/discharge-draft-ai]
+  E -->|Rule| G[/discharge-draft]
+  D --> A
+  F --> A
+  G --> A
 ```
 
-## Technology Stack
+## API endpointi
 
-| Layer | Technology |
-|---|---|
-| Frontend | React (JavaScript), Vite, Fetch API |
-| Backend | FastAPI, Uvicorn, Python |
-| Transcription | faster-whisper (`WhisperModel`) |
-| Audio transport | `multipart/form-data` |
-| Default inference mode | `model=small`, `device=cpu`, `compute_type=int8` |
+| Method | Route | Opis |
+|---|---|---|
+| `GET` | `/health` | Status servisa, model info, Ollama config |
+| `POST` | `/transcribe` | Transkripcija uploadovanog audio fajla |
+| `POST` | `/transcribe-microphone` | Transkripcija mikrofonskog snimka |
+| `POST` | `/transcript-corrections` | AI korekcija transkripta |
+| `POST` | `/discharge-draft` | Rule-based draft otpusne liste |
+| `POST` | `/discharge-draft-ai` | AI draft otpusne liste (Ollama) |
 
-## Repository Structure
+## Primer request/response
+
+### `POST /transcribe`
+
+```bash
+curl -X POST "http://localhost:8000/transcribe" \
+  -F "file=@/absolute/path/to/audio.mp3" \
+  -F "language=sr" \
+  -F "word_timestamps=true"
+```
+
+```json
+{
+  "detected_language": "sr",
+  "language_probability": 0.98,
+  "text": "Pacijent je primljen zbog...",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 4.9,
+      "text": "Pacijent je primljen zbog...",
+      "words": [
+        {
+          "start": 0.1,
+          "end": 0.6,
+          "word": "Pacijent",
+          "probability": 0.93
+        }
+      ]
+    }
+  ]
+}
+```
+
+Napomena: polje `words` se vraća samo kada je `word_timestamps=true`.
+
+## Lokalno pokretanje
+
+### Preduslovi
+
+- macOS/Linux
+- Python `3.11` ili `3.12` (preporučeno)
+- Node.js `18+`
+- npm `9+`
+- `ffmpeg` (preporučeno za fallback audio konverziju)
+- opcionalno: `ollama` za AI korekcije i AI draft
+
+Važno: izbegni Python `3.14` za ovaj projekat zbog kompatibilnosti dela ML zavisnosti.
+
+### 1) Backend
+
+```bash
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Backend je dostupan na: `http://localhost:8000`
+
+Brzi health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### 2) Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend je dostupan na: `http://localhost:5173`
+
+### 3) Ollama (opciono, za AI režim)
+
+```bash
+brew install ollama
+ollama serve
+ollama pull qwen2.5:3b-instruct
+```
+
+Ako Ollama nije aktivan, koristi `Rule-based` režim za draft.
+
+## Konfiguracija
+
+### Backend env
+
+| Varijabla | Default | Opis |
+|---|---|---|
+| `WHISPER_MODEL` | `small` | naziv faster-whisper modela |
+| `WHISPER_DEVICE` | `cpu` | uređaj za inferenciju |
+| `WHISPER_COMPUTE_TYPE` | `int8` | compute tip |
+| `OLLAMA_ENABLED` | `true` | uključivanje Ollama integracije |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL |
+| `OLLAMA_MODEL` | `qwen2.5:3b-instruct` | lokalni LLM model |
+| `OLLAMA_TIMEOUT_SECONDS` | `90` | timeout za Ollama pozive |
+
+### Frontend env
+
+| Varijabla | Default | Opis |
+|---|---|---|
+| `VITE_API_BASE_URL` | `http://localhost:8000` | baza backend API-ja |
+
+## Testiranje
+
+Za prezentaciju je dostupan izveštaj:
+
+- [TEST_REPORT_PRESENTATION.md](./TEST_REPORT_PRESENTATION.md)
+
+## Troubleshooting
+
+- `Failed to fetch` u frontend-u:
+  - backend nije pokrenut na `http://localhost:8000`
+  - pogrešan `API Base URL` u Settings
+  - CORS blokada ako frontend nije na `localhost:5173`
+
+- `ModuleNotFoundError` tokom backend starta:
+  - aktiviraj venv i ponovi `pip install -r requirements.txt`
+
+- AI endpointi ne rade:
+  - pokreni `ollama serve`
+  - proveri model sa `ollama list`
+  - po potrebi prebaci na `Rule-based` režim
+
+- Mikrofon ne radi:
+  - dozvoli microphone access u browser-u
+  - koristi HTTPS ili localhost okruženje
+
+## Struktura repozitorijuma
 
 ```text
 SerbianWhisper/
@@ -94,173 +244,30 @@ SerbianWhisper/
 ├── frontend/
 │   ├── public/
 │   │   ├── mini-logo.png
-│   │   └── serbianwhisper-logo.jpg
+│   │   ├── serbianwhisper-logo.jpg
+│   │   └── metropolitan-20.png
 │   ├── src/
 │   │   ├── App.jsx
 │   │   ├── App.css
 │   │   └── main.jsx
 │   ├── package.json
 │   └── README.md
+├── TEST_REPORT_PRESENTATION.md
 └── README.md
 ```
 
-## API Specification
+## Akademski kontekst
 
-### Health Check
+Projekat je rađen u okviru teme primene veštačke inteligencije u kliničkoj dokumentaciji.
 
-- `GET /health`
+Tim:
+- Dimitrije Milenković
+- Nemanja Vidić
+- Stevan Stojanović
 
-### File Transcription
+Institucija:
+- Univerzitet Metropolitan
 
-- `POST /transcribe`
+## Odgovorno korišćenje
 
-Form fields:
-- `file` (required)
-- `language` (optional, e.g. `sr`, `en`)
-- `word_timestamps` (optional, `true` or `false`)
-
-### Microphone Transcription
-
-- `POST /transcribe-microphone`
-
-Uses the same form fields as `/transcribe`.
-
-### Demo Discharge Draft
-
-- `POST /discharge-draft`
-
-Accepts transcript text and returns a structured, editable draft for an otpusna lista document.
-
-### AI Discharge Draft (Local LLM)
-
-- `POST /discharge-draft-ai`
-
-Uses local Ollama model (default `qwen2.5:3b-instruct`) to clean and structure the discharge draft.
-If Ollama is down, backend can fallback to rule-based draft with `fallback_to_rules=true`.
-
-### AI Transcript Corrections
-
-- `POST /transcript-corrections`
-
-Reviews transcript text, proposes likely word fixes, and returns corrected transcript plus correction list.
-
-### Response Shape
-
-```json
-{
-  "detected_language": "sr",
-  "language_probability": 0.98,
-  "text": "Full transcript text...",
-  "segments": [
-    {
-      "start": 0.0,
-      "end": 2.5,
-      "text": "Segment text",
-      "words": [
-        {
-          "start": 0.0,
-          "end": 0.4,
-          "word": "Zdravo",
-          "probability": 0.92
-        }
-      ]
-    }
-  ]
-}
-```
-
-`words` is included only when `word_timestamps=true`.
-
-## Local Development Setup
-
-### Prerequisites
-
-- Python `3.11` or `3.12`
-- Node.js `18+`
-- npm `9+`
-
-### 1) Backend
-
-```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Backend URL: `http://localhost:8000`
-
-### 2) Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Frontend URL: `http://localhost:5173`
-
-## Quick API Test
-
-```bash
-curl -X POST "http://localhost:8000/transcribe" \
-  -F "file=@/absolute/path/to/audio.mp3" \
-  -F "language=sr" \
-  -F "word_timestamps=true"
-```
-
-```bash
-curl -X POST "http://localhost:8000/discharge-draft" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transcript": "Pacijent primljen zbog bola u grudima. Tokom hospitalizacije uradjen EKG.",
-    "patient_name": "Petar Petrovic",
-    "doctor_name": "Dr Dimitrije Milenkovic"
-  }'
-```
-
-```bash
-curl -X POST "http://localhost:8000/discharge-draft-ai?fallback_to_rules=true" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transcript": "Pacijent primljen zbog bola u grudima. Tokom hospitalizacije uradjen EKG.",
-    "patient_name": "Petar Petrovic",
-    "doctor_name": "Dr Dimitrije Milenkovic"
-  }'
-```
-
-```bash
-curl -X POST "http://localhost:8000/transcript-corrections?fallback_noop=true" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transcript": "Pacijent primlen zbog bol u grudima i gusenja pri napor.",
-    "detected_language": "sr"
-  }'
-```
-
-## macOS Notes
-
-- Start with CPU mode for local development:
-  - `model=small`
-  - `device=cpu`
-  - `compute_type=int8`
-- First transcription can be slower because model files are downloaded on first run.
-- Microphone recording requires browser permission.
-
-## Troubleshooting
-
-- `Failed to fetch` in frontend:
-  - Confirm backend is running on `http://localhost:8000`.
-  - Check frontend `API Base URL` setting.
-- Missing Python dependency error:
-  - Activate virtual environment and reinstall with `pip install -r requirements.txt`.
-- Python compatibility issues on newest interpreters:
-  - Prefer Python `3.11` or `3.12` for best package compatibility in local setup.
-- For local AI otpusna draft:
-  - Start Ollama service (`ollama serve`) and pull model (`ollama pull qwen2.5:3b-instruct`).
-
-## Author
-
-Dimitrije Milenkovic
+Ovaj sistem je demo alat. Svaki generisani medicinski sadržaj mora da prođe stručnu validaciju pre realne upotrebe.
