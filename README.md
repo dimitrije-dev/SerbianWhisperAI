@@ -41,6 +41,9 @@ Core workflow:
 - Light/Dark mode plus theme presets (`Mint`, `Studio`, `Classic`)
 - Word-level timestamps toggle
 - Export transcription as `TXT`, `SRT`, and `VTT`
+- Free local demo generator for `Otpusna lista` (`POST /discharge-draft`)
+- Local LLM otpusna lista draft (`POST /discharge-draft-ai`) via Ollama with rule fallback
+- AI transcript proofreading with correction suggestions (`POST /transcript-corrections`)
 - Responsive UI with desktop and mobile navigation
 
 ## Screenshots
@@ -122,6 +125,25 @@ Form fields:
 
 Uses the same form fields as `/transcribe`.
 
+### Demo Discharge Draft
+
+- `POST /discharge-draft`
+
+Accepts transcript text and returns a structured, editable draft for an otpusna lista document.
+
+### AI Discharge Draft (Local LLM)
+
+- `POST /discharge-draft-ai`
+
+Uses local Ollama model (default `qwen2.5:3b-instruct`) to clean and structure the discharge draft.
+If Ollama is down, backend can fallback to rule-based draft with `fallback_to_rules=true`.
+
+### AI Transcript Corrections
+
+- `POST /transcript-corrections`
+
+Reviews transcript text, proposes likely word fixes, and returns corrected transcript plus correction list.
+
 ### Response Shape
 
 ```json
@@ -189,6 +211,35 @@ curl -X POST "http://localhost:8000/transcribe" \
   -F "word_timestamps=true"
 ```
 
+```bash
+curl -X POST "http://localhost:8000/discharge-draft" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transcript": "Pacijent primljen zbog bola u grudima. Tokom hospitalizacije uradjen EKG.",
+    "patient_name": "Petar Petrovic",
+    "doctor_name": "Dr Dimitrije Milenkovic"
+  }'
+```
+
+```bash
+curl -X POST "http://localhost:8000/discharge-draft-ai?fallback_to_rules=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transcript": "Pacijent primljen zbog bola u grudima. Tokom hospitalizacije uradjen EKG.",
+    "patient_name": "Petar Petrovic",
+    "doctor_name": "Dr Dimitrije Milenkovic"
+  }'
+```
+
+```bash
+curl -X POST "http://localhost:8000/transcript-corrections?fallback_noop=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transcript": "Pacijent primlen zbog bol u grudima i gusenja pri napor.",
+    "detected_language": "sr"
+  }'
+```
+
 ## macOS Notes
 
 - Start with CPU mode for local development:
@@ -207,6 +258,8 @@ curl -X POST "http://localhost:8000/transcribe" \
   - Activate virtual environment and reinstall with `pip install -r requirements.txt`.
 - Python compatibility issues on newest interpreters:
   - Prefer Python `3.11` or `3.12` for best package compatibility in local setup.
+- For local AI otpusna draft:
+  - Start Ollama service (`ollama serve`) and pull model (`ollama pull qwen2.5:3b-instruct`).
 
 ## Author
 

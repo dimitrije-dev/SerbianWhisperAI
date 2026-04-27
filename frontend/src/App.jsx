@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FiClock,
   FiDownload,
+  FiFileText,
   FiLoader,
   FiMenu,
   FiMic,
@@ -18,6 +19,7 @@ const THEME_STORAGE_KEY = "sebianwhisper_theme";
 const THEME_PRESET_KEY = "sebianwhisper_theme_preset";
 const HISTORY_STORAGE_KEY = "sebianwhisper_history";
 const SETTINGS_STORAGE_KEY = "sebianwhisper_settings";
+const DISCHARGE_ENGINE_STORAGE_KEY = "sebianwhisper_discharge_engine";
 const RECORDER_MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
 const THEME_PRESETS = [
   { value: "mint", label: "Mint" },
@@ -97,19 +99,19 @@ ${segment.text.trim()}`;
 function normalizeResponse(raw) {
   const segments = Array.isArray(raw?.segments)
     ? raw.segments.map((segment) => ({
-        start: Number(segment.start) || 0,
-        end: Number(segment.end) || 0,
-        text: String(segment.text || ""),
-        words: Array.isArray(segment.words)
-          ? segment.words.map((word) => ({
-              start: Number(word.start) || 0,
-              end: Number(word.end) || 0,
-              word: String(word.word || ""),
-              probability:
-                typeof word.probability === "number" ? word.probability : Number(word.probability) || 0,
-            }))
-          : undefined,
-      }))
+      start: Number(segment.start) || 0,
+      end: Number(segment.end) || 0,
+      text: String(segment.text || ""),
+      words: Array.isArray(segment.words)
+        ? segment.words.map((word) => ({
+          start: Number(word.start) || 0,
+          end: Number(word.end) || 0,
+          word: String(word.word || ""),
+          probability:
+            typeof word.probability === "number" ? word.probability : Number(word.probability) || 0,
+        }))
+        : undefined,
+    }))
     : [];
 
   return {
@@ -192,6 +194,11 @@ function normalizeThemePreset(value) {
   return THEME_PRESETS.some((preset) => preset.value === safe) ? safe : "mint";
 }
 
+function normalizeDischargeEngine(value) {
+  const safe = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return safe === "rule" ? "rule" : "ai";
+}
+
 function getSupportedRecorderMimeType() {
   if (typeof MediaRecorder === "undefined") return "";
 
@@ -211,6 +218,55 @@ function getExtensionForMimeType(mimeType) {
   if (safe.includes("mpeg")) return "mp3";
   if (safe.includes("wav")) return "wav";
   return "webm";
+}
+
+function buildDischargeDocumentText(fields = {}, disclaimer = "") {
+  const lines = [
+    "Otpusna lista",
+    "",
+    `Pacijent: ${fields.patient_name || ""}`,
+    `Pacijent ID: ${fields.patient_id || ""}`,
+    `Odeljenje: ${fields.department || ""}`,
+    `Lekar: ${fields.doctor_name || ""}`,
+    `Datum prijema: ${fields.admission_date || ""}`,
+    `Datum otpusta: ${fields.discharge_date || ""}`,
+    "",
+    "Glavna dijagnoza:",
+    fields.main_diagnosis || "",
+    "",
+    "Pratece dijagnoze:",
+    fields.secondary_diagnoses || "",
+    "",
+    "Anamneza / razlog prijema:",
+    fields.anamnesis || "",
+    "",
+    "Tok hospitalizacije:",
+    fields.hospital_course || "",
+    "",
+    "Procedure i nalazi:",
+    fields.procedures || "",
+    "",
+    "Terapija tokom lecenja:",
+    fields.therapy_during_stay || "",
+    "",
+    "Terapija pri otpustu:",
+    fields.therapy_on_discharge || "",
+    "",
+    "Preporuke:",
+    fields.recommendations || "",
+    "",
+    "Plan kontrole:",
+    fields.follow_up || "",
+    "",
+    "Upozorenja (red flags):",
+    fields.red_flags || "",
+  ];
+
+  if (disclaimer) {
+    lines.push("", "Napomena:", disclaimer);
+  }
+
+  return lines.join("\n");
 }
 
 function App() {
@@ -239,6 +295,27 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [dischargeForm, setDischargeForm] = useState({
+    patientName: "",
+    patientId: "",
+    doctorName: "",
+    department: "Interno odeljenje",
+    admissionDate: "",
+    dischargeDate: "",
+  });
+  const [dischargeDraft, setDischargeDraft] = useState(null);
+  const [dischargeLoading, setDischargeLoading] = useState(false);
+  const [dischargeError, setDischargeError] = useState("");
+  const [correctionLoading, setCorrectionLoading] = useState(false);
+  const [correctionError, setCorrectionError] = useState("");
+  const [correctionInfo, setCorrectionInfo] = useState(null);
+  const [correctedTranscript, setCorrectedTranscript] = useState("");
+  const [correctionItems, setCorrectionItems] = useState([]);
+  const [useCorrectedTranscript, setUseCorrectedTranscript] = useState(true);
+  const [dischargeDocumentText, setDischargeDocumentText] = useState("");
+  const [dischargeEngine, setDischargeEngine] = useState(() =>
+    normalizeDischargeEngine(localStorage.getItem(DISCHARGE_ENGINE_STORAGE_KEY))
+  );
   const [history, setHistory] = useState(loadHistory);
   const [selectedHistoryId, setSelectedHistoryId] = useState(null);
   const [jobs, setJobs] = useState([]);
@@ -259,9 +336,9 @@ function App() {
   const microphoneSupported = useMemo(() => {
     return Boolean(
       typeof navigator !== "undefined" &&
-        navigator.mediaDevices &&
-        navigator.mediaDevices.getUserMedia &&
-        typeof MediaRecorder !== "undefined"
+      navigator.mediaDevices &&
+      navigator.mediaDevices.getUserMedia &&
+      typeof MediaRecorder !== "undefined"
     );
   }, []);
 
@@ -277,10 +354,44 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (!mobileMenuOpen) {
+      document.body.style.overflow = "";
+      return;
+    }
+
+    document.body.style.overflow = "hidden";
+    const onEscape = (event) => {
+      if (event.key === "Escape") {
+        setMobileMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", onEscape);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", onEscape);
+    };
+  }, [mobileMenuOpen]);
+
+  useEffect(() => {
     const normalized = normalizeThemePreset(themePreset);
     document.documentElement.setAttribute("data-theme-preset", normalized);
     localStorage.setItem(THEME_PRESET_KEY, normalized);
   }, [themePreset]);
+
+  useEffect(() => {
+    localStorage.setItem(DISCHARGE_ENGINE_STORAGE_KEY, dischargeEngine);
+  }, [dischargeEngine]);
+
+  useEffect(() => {
+    setCorrectionLoading(false);
+    setCorrectionError("");
+    setCorrectionInfo(null);
+    setCorrectedTranscript("");
+    setCorrectionItems([]);
+    setUseCorrectedTranscript(true);
+    setDischargeDocumentText("");
+  }, [result?.id]);
 
   useEffect(() => {
     if (!audioFile) {
@@ -411,7 +522,7 @@ function App() {
 
     return () => {
       cancelled = true;
-      audioContext.close().catch(() => {});
+      audioContext.close().catch(() => { });
     };
   }, [activeResultAudioUrl]);
 
@@ -520,6 +631,16 @@ function App() {
     persistHistory([]);
   }
 
+  function useHistoryRecordForDischarge(record) {
+    if (!record) return;
+    setResult(record);
+    setDischargeDraft(null);
+    setDischargeDocumentText("");
+    setDischargeError("");
+    setCurrentPlaybackTime(0);
+    goToPage("discharge");
+  }
+
   function exportTranscript(record, kind) {
     if (!record) return;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -549,7 +670,7 @@ function App() {
     if (!player) return;
 
     player.currentTime = Math.max(0, Number(start) || 0);
-    player.play().catch(() => {});
+    player.play().catch(() => { });
   }
 
   function handleWaveformSeek(event) {
@@ -569,7 +690,7 @@ function App() {
 
     player.currentTime = targetTime;
     setCurrentPlaybackTime(targetTime);
-    player.play().catch(() => {});
+    player.play().catch(() => { });
   }
 
   async function submitTranscriptionFile(fileToTranscribe, options = {}) {
@@ -594,6 +715,8 @@ function App() {
     setLoading(true);
     setError("");
     setResult(null);
+    setDischargeDraft(null);
+    setDischargeError("");
 
     try {
       updateJob(jobId, { status: "transcribing", updatedAt: new Date().toISOString() });
@@ -635,7 +758,7 @@ function App() {
         segmentCount: normalized.segments.length,
       });
     } catch (err) {
-      setError(err.message || "Doslo je do greske.");
+      setError(err.message || "Došlo je do greške.");
       updateJob(jobId, {
         status: "error",
         error: err.message || "Unknown error",
@@ -696,7 +819,7 @@ function App() {
       };
 
       recorder.onerror = () => {
-        setRecordingError("Doslo je do greske tokom snimanja.");
+        setRecordingError("Došlo je do greške tokom snimanja.");
       };
 
       recorder.start(200);
@@ -799,6 +922,122 @@ function App() {
     setThemePreset(clean.themePreset);
     setSettingsForm(clean);
     setSettingsMessage("Settings su sacuvane.");
+  }
+
+  function exportDischargeDraftTxt() {
+    if (!dischargeDraft?.fields && !dischargeDocumentText.trim()) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const fallbackText = buildDischargeDocumentText(dischargeDraft?.fields || {}, dischargeDraft?.disclaimer || "");
+    const finalText = dischargeDocumentText.trim() ? dischargeDocumentText : fallbackText;
+    downloadFile(`otpusna-lista-demo-${stamp}.txt`, finalText, "text/plain;charset=utf-8");
+  }
+
+  async function runTranscriptCorrections() {
+    if (!result?.text?.trim()) {
+      setCorrectionError("Prvo uradi transkripciju pa zatim pokreni AI korekciju.");
+      return;
+    }
+
+    setCorrectionLoading(true);
+    setCorrectionError("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/transcript-corrections?fallback_noop=true`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transcript: result.text,
+          detected_language: result.detected_language || "",
+          segments: result.segments || [],
+          max_corrections: 24,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || "AI korekcija nije uspela.");
+      }
+
+      const nextCorrected = (data?.corrected_transcript || result.text || "").trim();
+      const nextItems = Array.isArray(data?.corrections) ? data.corrections : [];
+
+      setCorrectedTranscript(nextCorrected);
+      setCorrectionItems(nextItems);
+      setCorrectionInfo({
+        engine: data?.engine || "",
+        qualityNotes: data?.quality_notes || "",
+        aiError: data?.ai_error || "",
+      });
+      setUseCorrectedTranscript(true);
+    } catch (err) {
+      setCorrectionError(err.message || "AI korekcija nije uspela.");
+    } finally {
+      setCorrectionLoading(false);
+    }
+  }
+
+  async function generateDischargeDraft() {
+    if (!result?.text?.trim()) {
+      setDischargeError("Prvo uradi transkripciju pa zatim generisi demo otpusnu listu.");
+      return;
+    }
+
+    setDischargeLoading(true);
+    setDischargeError("");
+    const transcriptForDraft =
+      useCorrectedTranscript && correctedTranscript.trim() ? correctedTranscript.trim() : result.text;
+    const usingAiEngine = dischargeEngine === "ai";
+    const endpoint = usingAiEngine
+      ? `${apiBaseUrl}/discharge-draft-ai?fallback_to_rules=false`
+      : `${apiBaseUrl}/discharge-draft`;
+
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          transcript: transcriptForDraft,
+          detected_language: result.detected_language || "",
+          segments: result.segments || [],
+          patient_name: dischargeForm.patientName,
+          patient_id: dischargeForm.patientId,
+          doctor_name: dischargeForm.doctorName,
+          department: dischargeForm.department,
+          admission_date: dischargeForm.admissionDate,
+          discharge_date: dischargeForm.dischargeDate,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || "Generisanje otpusne liste nije uspelo.");
+      }
+
+      setDischargeDraft({
+        ...data,
+        fields: { ...(data.fields || {}) },
+        sources: data.sources || {},
+      });
+      setDischargeDocumentText(
+        buildDischargeDocumentText(
+          { ...(data.fields || {}) },
+          data.disclaimer || ""
+        )
+      );
+    } catch (err) {
+      const baseMessage = err.message || "Došlo je do greške tokom generisanja drafta.";
+      if (usingAiEngine) {
+        setDischargeError(`${baseMessage} Pokreni Ollama servis ili prebaci mode na Rule-based.`);
+      } else {
+        setDischargeError(baseMessage);
+      }
+    } finally {
+      setDischargeLoading(false);
+    }
   }
 
   function renderTranscriptionResult() {
@@ -915,536 +1154,897 @@ function App() {
 
       <header className="topbar reveal">
         <div className="topbar-inner">
-          <div className="brand" aria-label="SerbianWhisper AI">
-            <img src="/mini-logo.png" alt="SebianWhisper mini logo" />
-            <span>SerbianWhisper AI</span>
+          <div className="brand-wrap">
+            <div className="brand" aria-label="SerbianWhisper AI">
+              <img src="/mini-logo.png" alt="SebianWhisper mini logo" />
+              <span>SerbianWhisper AI</span>
+            </div>
+            <p className="topbar-context">Bolnički informacioni sistem | Klinička dokumentacija</p>
           </div>
 
-          <button
-            type="button"
-            className="hamburger-btn"
-            onClick={() => setMobileMenuOpen((open) => !open)}
-            aria-label="Toggle menu"
-          >
-            {mobileMenuOpen ? <FiX /> : <FiMenu />}
-          </button>
-
-          <div className={mobileMenuOpen ? "menu-wrap open" : "menu-wrap"}>
-            <nav className="menu">
-              <button
-                className={activePage === "transcribe" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("transcribe")}
-                type="button"
-              >
-                Transkripcija
-              </button>
-              <button
-                className={activePage === "recording" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("recording")}
-                type="button"
-              >
-                Snimanje
-              </button>
-              <button
-                className={activePage === "history" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("history")}
-                type="button"
-              >
-                Istorija
-              </button>
-              <button
-                className={activePage === "jobs" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("jobs")}
-                type="button"
-              >
-                Jobs
-              </button>
-              <button
-                className={activePage === "settings" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("settings")}
-                type="button"
-              >
-                Settings
-              </button>
-              <button
-                className={activePage === "about" ? "menu-btn active" : "menu-btn"}
-                onClick={() => goToPage("about")}
-                type="button"
-              >
-                O projektu
-              </button>
-            </nav>
+          <div className="topbar-actions">
+            <button
+              className={activePage === "settings" ? "settings-entry active" : "settings-entry"}
+              onClick={() => goToPage("settings")}
+              type="button"
+            >
+              <FiSettings />
+              <span>Settings</span>
+            </button>
 
             <button className="theme-toggle" onClick={toggleTheme} type="button">
               <ThemeIcon />
               <span>{themeLabel}</span>
+            </button>
+
+            <button
+              type="button"
+              className="hamburger-btn"
+              onClick={() => setMobileMenuOpen((open) => !open)}
+              aria-label="Toggle menu"
+            >
+              {mobileMenuOpen ? <FiX /> : <FiMenu />}
             </button>
           </div>
         </div>
       </header>
 
       <main className="content">
-        {activePage === "transcribe" ? (
-          <section className="panel">
-            <div className="hero reveal">
-              <img className="hero-logo" src="/serbianwhisper-logo.jpg" alt="SebianWhisper logo" />
-              <div className="hero-copy">
-                <h1>SebianWhisper</h1>
-                <p>
-                  Lokalna AI transkripcija zvuka sa jasnim segmentima i timestampovima. Upload,
-                  pokreni obradu i odmah pregledaj rezultat u profesionalnom dashboard prikazu.
-                </p>
-                <div className="hero-badges">
-                  <span>FastAPI backend</span>
-                  <span>Faster-Whisper</span>
-                  <span>CPU ready</span>
-                </div>
-              </div>
-            </div>
+        {mobileMenuOpen ? (
+          <button
+            type="button"
+            className="sidebar-backdrop"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-label="Close navigation menu"
+          />
+        ) : null}
 
-            <form className="card reveal delay-1" onSubmit={handleSubmit}>
-              <div className="field">
-                <label htmlFor="audio-file">Audio fajl</label>
-                <label htmlFor="audio-file" className={audioFile ? "upload-box has-file" : "upload-box"}>
-                  <input
-                    id="audio-file"
-                    type="file"
-                    accept="audio/*"
-                    onChange={(event) => setAudioFile(event.target.files?.[0] || null)}
-                  />
-                  <span className="upload-title">
-                    {audioFile ? audioFile.name : "Prevuci ili izaberi audio fajl"}
-                  </span>
-                  <span className="upload-help">Podrzano: mp3, wav, m4a, ogg i ostali formati</span>
-                </label>
-              </div>
-
-              <div className="input-row">
-                <div className="field">
-                  <label htmlFor="language">Kod jezika (opciono)</label>
-                  <select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
-                    {LANGUAGE_OPTIONS.map((option) => (
-                      <option key={option.value || "auto"} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={wordTimestamps}
-                  className={wordTimestamps ? "toggle-control on" : "toggle-control"}
-                  onClick={() => setWordTimestamps((current) => !current)}
-                >
-                  <span className="toggle-track">
-                    <span className="toggle-thumb" />
-                  </span>
-                  <span className="toggle-text">Word timestamps</span>
-                </button>
-              </div>
-
-              <button type="submit" disabled={!canSubmit} className="primary-btn">
-                {loading ? "Transkribujem..." : "Pokreni transkripciju"}
+        <div className="workspace">
+          <aside className={mobileMenuOpen ? "his-sidebar open" : "his-sidebar"}>
+            <p className="his-sidebar-title">Navigacija modula</p>
+            <nav className="his-nav">
+              <button
+                className={activePage === "transcribe" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("transcribe")}
+                type="button"
+              >
+                <FiFileText /> Transkripcija
               </button>
-            </form>
+              <button
+                className={activePage === "recording" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("recording")}
+                type="button"
+              >
+                <FiMic /> Snimanje
+              </button>
+              <button
+                className={activePage === "discharge" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("discharge")}
+                type="button"
+              >
+                <FiFileText /> Otpusna lista
+              </button>
+              <button
+                className={activePage === "history" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("history")}
+                type="button"
+              >
+                <FiClock /> Istorija
+              </button>
+              <button
+                className={activePage === "jobs" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("jobs")}
+                type="button"
+              >
+                <FiLoader /> Jobs
+              </button>
+              <button
+                className={activePage === "about" ? "menu-btn active" : "menu-btn"}
+                onClick={() => goToPage("about")}
+                type="button"
+              >
+                <FiSettings /> O projektu
+              </button>
+            </nav>
+          </aside>
 
-            {audioPreviewUrl ? (
-              <div className="card audio-card reveal">
-                <h3>Audio preview</h3>
-                <audio
-                  ref={audioRef}
-                  controls
-                  src={audioPreviewUrl}
-                  onTimeUpdate={(event) => setCurrentPlaybackTime(event.currentTarget.currentTime)}
-                />
-              </div>
-            ) : null}
-
-            {loading ? (
-              <div className="card loading-card reveal">
-                <FiLoader className="spinner-icon" />
-                <div>
-                  <h3>Obrada je u toku</h3>
-                  <p>
-                    Molim sacekaj dok model zavrsi transkripciju. Vece audio datoteke mogu trajati
-                    malo duze.
-                  </p>
-                </div>
-              </div>
-            ) : null}
-
-            {error ? <p className="error reveal">{error}</p> : null}
-            {result?.source !== "microphone" ? renderTranscriptionResult() : null}
-          </section>
-        ) : null}
-
-        {activePage === "recording" ? (
-          <section className="panel reveal">
-            <div className="card recording-card">
-              <div className="recording-head">
-                <div>
-                  <h1>Studio snimanje</h1>
-                  <p className="recording-intro">
-                    Snimi glas direktno iz browsera i odmah transkribuj bez dodatnog upload koraka.
-                  </p>
-                </div>
-                <div className="recording-status-wrap">
-                  <span className={isRecording ? "recording-status on" : "recording-status"}>
-                    {isRecording ? "Snimanje: ON" : "Snimanje: OFF"}
-                  </span>
-                  <span className={isRecording ? "recording-timer live" : "recording-timer"}>
-                    {formatTime(recordingSeconds)}
-                  </span>
-                </div>
-              </div>
-
-              <div className={isRecording ? "recording-visualizer live" : "recording-visualizer"}>
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-
-              <div className="recording-controls">
-                <button
-                  type="button"
-                  className={isRecording ? "ghost-btn" : "primary-btn"}
-                  onClick={startRecording}
-                  disabled={isRecording || !microphoneSupported}
-                >
-                  <FiMic /> Start snimanja
-                </button>
-                <button type="button" className="ghost-btn" onClick={stopRecording} disabled={!isRecording}>
-                  <FiSquare /> Stop
-                </button>
-                <button type="button" className="ghost-btn" onClick={restartRecordingSession} disabled={loading}>
-                  <FiRotateCcw /> Restart
-                </button>
-                <button
-                  type="button"
-                  className="primary-btn"
-                  onClick={transcribeRecordedAudio}
-                  disabled={!canTranscribeRecording}
-                >
-                  {loading ? (
-                    <>
-                      <FiLoader className="inline-spin" /> Transkribujem...
-                    </>
-                  ) : (
-                    "Sacuvaj i transkribuj"
-                  )}
-                </button>
-              </div>
-
-              <div className="recording-meta compact">
-                <span>Duzina: {formatTime(recordingSeconds)}</span>
-                <span>Jezik: {language || "auto"}</span>
-              </div>
-
-              <div className="input-row">
-                <div className="field">
-                  <label htmlFor="recording-language">Kod jezika (opciono)</label>
-                  <select
-                    id="recording-language"
-                    value={language}
-                    onChange={(event) => setLanguage(event.target.value)}
-                  >
-                    {LANGUAGE_OPTIONS.map((option) => (
-                      <option key={`recording-${option.value || "auto"}`} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+          <div className="workspace-main">
+            {activePage === "transcribe" ? (
+              <section className="panel">
+                <div className="hero reveal">
+                  <img className="hero-logo" src="/serbianwhisper-logo.jpg" alt="SebianWhisper logo" />
+                  <div className="hero-copy">
+                    <h1>SerbianWhisper Clinical Assistant</h1>
+                    <p>
+                      Bolnički demo sistem za klinički diktat, transkripciju i automatsko formiranje
+                      draft otpusne liste. Sve radi lokalno i pripremljeno je za workflow sa medicinskom
+                      validacijom.
+                    </p>
+                    <div className="hero-badges">
+                      <span>HIS demo UI</span>
+                      <span>Klinička dokumentacija</span>
+                      <span>Audit workflow</span>
+                    </div>
+                    <div className="clinical-summary">
+                      <span>Transkripcija: faster-whisper (small, CPU int8)</span>
+                      <span>Dokument: lokalni demo generator otpusne liste</span>
+                    </div>
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={wordTimestamps}
-                  className={wordTimestamps ? "toggle-control on" : "toggle-control"}
-                  onClick={() => setWordTimestamps((current) => !current)}
-                >
-                  <span className="toggle-track">
-                    <span className="toggle-thumb" />
-                  </span>
-                  <span className="toggle-text">Word timestamps</span>
-                </button>
-              </div>
+                <form className="card reveal delay-1" onSubmit={handleSubmit}>
+                  <div className="field">
+                    <label htmlFor="audio-file">Audio fajl</label>
+                    <label htmlFor="audio-file" className={audioFile ? "upload-box has-file" : "upload-box"}>
+                      <input
+                        id="audio-file"
+                        type="file"
+                        accept="audio/*"
+                        onChange={(event) => setAudioFile(event.target.files?.[0] || null)}
+                      />
+                      <span className="upload-title">
+                        {audioFile ? audioFile.name : "Prevuci ili izaberi audio fajl"}
+                      </span>
+                      <span className="upload-help">Podrzano: mp3, wav, m4a, ogg i ostali formati</span>
+                    </label>
+                  </div>
 
-              {!microphoneSupported ? (
-                <p className="error">Tvoj browser ne podrzava MediaRecorder API.</p>
-              ) : null}
+                  <div className="input-row">
+                    <div className="field">
+                      <label htmlFor="language">Kod jezika (opciono)</label>
+                      <select id="language" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                        {LANGUAGE_OPTIONS.map((option) => (
+                          <option key={option.value || "auto"} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-              {recordingError ? <p className="error">{recordingError}</p> : null}
-            </div>
-
-            {recordedAudioUrl ? (
-              <div className="card audio-card reveal">
-                <h3>Snimljeni audio</h3>
-                <audio
-                  ref={recorderPreviewRef}
-                  controls
-                  src={recordedAudioUrl}
-                  onTimeUpdate={(event) => setCurrentPlaybackTime(event.currentTarget.currentTime)}
-                />
-              </div>
-            ) : null}
-
-            {loading ? (
-              <div className="card loading-card reveal">
-                <FiLoader className="spinner-icon" />
-                <div>
-                  <h3>Transkripcija snimka je u toku</h3>
-                  <p>Obrada ce automatski prikazati rezultat ispod cim se zavrsi.</p>
-                </div>
-              </div>
-            ) : null}
-
-            {error ? <p className="error reveal">{error}</p> : null}
-            {result?.source === "microphone" ? renderTranscriptionResult() : null}
-          </section>
-        ) : null}
-
-        {activePage === "history" ? (
-          <section className="panel reveal">
-            <div className="title-row">
-              <h1>Istorija transkripcije</h1>
-              {history.length > 0 ? (
-                <button type="button" className="ghost-btn" onClick={clearHistory}>
-                  Obrisi istoriju
-                </button>
-              ) : null}
-            </div>
-
-            <div className="history-layout">
-              <div className="card history-list">
-                {history.length === 0 ? (
-                  <p>Jos uvek nema sacuvanih transkripata.</p>
-                ) : (
-                  history.map((item) => (
                     <button
                       type="button"
-                      key={item.id}
-                      className={selectedHistoryId === item.id ? "history-item active" : "history-item"}
-                      onClick={() => setSelectedHistoryId(item.id)}
+                      role="switch"
+                      aria-checked={wordTimestamps}
+                      className={wordTimestamps ? "toggle-control on" : "toggle-control"}
+                      onClick={() => setWordTimestamps((current) => !current)}
                     >
-                      <strong>{item.fileName || "Audio file"}</strong>
-                      <span>{formatDate(item.createdAt)}</span>
-                      <span className="history-lang">Jezik: {item.detected_language || "auto"}</span>
-                      <p>{item.text?.slice(0, 120) || "(prazno)"}...</p>
+                      <span className="toggle-track">
+                        <span className="toggle-thumb" />
+                      </span>
+                      <span className="toggle-text">Word timestamps</span>
                     </button>
-                  ))
-                )}
-              </div>
+                  </div>
 
-              <div className="card history-detail">
-                {selectedHistory ? (
-                  <>
-                    <div className="title-row">
-                      <h2>{selectedHistory.fileName}</h2>
-                      <div className="export-actions">
+                  <button type="submit" disabled={!canSubmit} className="primary-btn">
+                    {loading ? "Transkribujem..." : "Pokreni transkripciju"}
+                  </button>
+                </form>
+
+                {audioPreviewUrl ? (
+                  <div className="card audio-card reveal">
+                    <h3>Audio preview</h3>
+                    <audio
+                      ref={audioRef}
+                      controls
+                      src={audioPreviewUrl}
+                      onTimeUpdate={(event) => setCurrentPlaybackTime(event.currentTarget.currentTime)}
+                    />
+                  </div>
+                ) : null}
+
+                {loading ? (
+                  <div className="card loading-card reveal">
+                    <FiLoader className="spinner-icon" />
+                    <div>
+                      <h3>Obrada je u toku</h3>
+                      <p>
+                        Molim sačekaj dok model završi transkripciju. Veće audio datoteke mogu trajati
+                        malo duže.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {error ? <p className="error reveal">{error}</p> : null}
+                {result?.source !== "microphone" ? renderTranscriptionResult() : null}
+              </section>
+            ) : null}
+
+            {activePage === "recording" ? (
+              <section className="panel reveal">
+                <div className="card recording-card">
+                  <div className="recording-head">
+                    <div>
+                      <h1>Klinicko snimanje</h1>
+                      <p className="recording-intro">
+                        Snimi klinički diktat, proveri audio i jednim klikom prebaci rezultat u transkript
+                        spreman za dokumentaciju pacijenta.
+                      </p>
+                    </div>
+                    <div className="recording-status-wrap">
+                      <span className={isRecording ? "recording-status on" : "recording-status"}>
+                        {isRecording ? "Snimanje: ON" : "Snimanje: OFF"}
+                      </span>
+                      <span className={isRecording ? "recording-timer live" : "recording-timer"}>
+                        {formatTime(recordingSeconds)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="recording-kpis">
+                    <article>
+                      <p>Status mikrofona</p>
+                      <strong>{microphoneSupported ? "Dostupan" : "Nije dostupan"}</strong>
+                    </article>
+                    <article>
+                      <p>Aktivni jezik</p>
+                      <strong>{language || "Auto detect"}</strong>
+                    </article>
+                    <article>
+                      <p>Word timestamps</p>
+                      <strong>{wordTimestamps ? "Ukljuceno" : "Iskljuceno"}</strong>
+                    </article>
+                  </div>
+
+                  <div className="recording-workspace">
+                    <div className="recording-main">
+                      <div className={isRecording ? "recording-visualizer live" : "recording-visualizer"}>
+                        <span />
+                        <span />
+                        <span />
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+
+                      <div className="recording-control-grid">
                         <button
                           type="button"
-                          className="ghost-btn"
-                          onClick={() => exportTranscript(selectedHistory, "txt")}
+                          className={isRecording ? "ghost-btn" : "primary-btn"}
+                          onClick={startRecording}
+                          disabled={isRecording || !microphoneSupported}
                         >
-                          <FiDownload /> TXT
+                          <FiMic /> Start snimanja
+                        </button>
+                        <button type="button" className="ghost-btn" onClick={stopRecording} disabled={!isRecording}>
+                          <FiSquare /> Stop
+                        </button>
+                        <button type="button" className="ghost-btn" onClick={restartRecordingSession} disabled={loading}>
+                          <FiRotateCcw /> Restart
                         </button>
                         <button
                           type="button"
-                          className="ghost-btn"
-                          onClick={() => exportTranscript(selectedHistory, "srt")}
+                          className="primary-btn"
+                          onClick={transcribeRecordedAudio}
+                          disabled={!canTranscribeRecording}
                         >
-                          <FiDownload /> SRT
+                          {loading ? (
+                            <>
+                              <FiLoader className="inline-spin" /> Transkribujem...
+                            </>
+                          ) : (
+                            "Sačuvaj i transkribuj"
+                          )}
                         </button>
+                      </div>
+
+                      <div className="recording-meta compact">
+                        <span>Duzina snimka: {formatTime(recordingSeconds)}</span>
+                        <span>Jezik: {language || "auto"}</span>
+                      </div>
+
+                      <div className="input-row recording-options">
+                        <div className="field">
+                          <label htmlFor="recording-language">Kod jezika (opciono)</label>
+                          <select
+                            id="recording-language"
+                            value={language}
+                            onChange={(event) => setLanguage(event.target.value)}
+                          >
+                            {LANGUAGE_OPTIONS.map((option) => (
+                              <option key={`recording-${option.value || "auto"}`} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
                         <button
                           type="button"
-                          className="ghost-btn"
-                          onClick={() => exportTranscript(selectedHistory, "vtt")}
+                          role="switch"
+                          aria-checked={wordTimestamps}
+                          className={wordTimestamps ? "toggle-control on" : "toggle-control"}
+                          onClick={() => setWordTimestamps((current) => !current)}
                         >
-                          <FiDownload /> VTT
+                          <span className="toggle-track">
+                            <span className="toggle-thumb" />
+                          </span>
+                          <span className="toggle-text">Word timestamps</span>
                         </button>
                       </div>
                     </div>
 
-                    <p className="history-meta">
-                      <FiClock /> {formatDate(selectedHistory.createdAt)}
-                    </p>
-                    <p className="transcript-text">{selectedHistory.text || "(prazan transkript)"}</p>
-
-                    <h3>Segmenti</h3>
-                    {Array.isArray(selectedHistory.segments) && selectedHistory.segments.length > 0 ? (
-                      <ul className="segments">
-                        {selectedHistory.segments.map((segment, index) => (
-                          <li key={`${selectedHistory.id}-${index}`}>
-                            <div className="segment-meta">
-                              <span>{formatTime(segment.start)}</span>
-                              <span>{formatTime(segment.end)}</span>
-                            </div>
-                            <p>{segment.text}</p>
-                          </li>
-                        ))}
+                    <aside className="recording-guide">
+                      <h3>Check lista pre snimanja</h3>
+                      <ul>
+                        <li>Potvrdi identitet pacijenta i broj istorije bolesti.</li>
+                        <li>Govori jasno i navedi kljucne sekcije (anamneza, dijagnoza, terapija).</li>
+                        <li>Posle transkripcije obavezno uradi stručnu medicinsku proveru.</li>
                       </ul>
-                    ) : (
-                      <p>Nema segmenata.</p>
-                    )}
-                  </>
-                ) : (
-                  <p>Izaberi transcript sa leve strane.</p>
-                )}
-              </div>
-            </div>
-          </section>
-        ) : null}
+                    </aside>
+                  </div>
 
-        {activePage === "jobs" ? (
-          <section className="panel reveal">
-            <h1>Jobs status</h1>
-            <div className="card">
-              {jobs.length === 0 ? (
-                <p>Trenutno nema job-ova. Pokreni transkripciju da vidis queue.</p>
-              ) : (
-                <ul className="jobs-list">
-                  {jobs.map((job) => (
-                    <li key={job.id}>
-                      <div>
-                        <strong>{job.fileName}</strong>
-                        <p>{formatDate(job.updatedAt)}</p>
+                  {!microphoneSupported ? (
+                    <p className="error">Tvoj browser ne podrzava MediaRecorder API.</p>
+                  ) : null}
+
+                  {recordingError ? <p className="error">{recordingError}</p> : null}
+                </div>
+
+                {recordedAudioUrl ? (
+                  <div className="card audio-card reveal">
+                    <h3>Snimljeni audio</h3>
+                    <audio
+                      ref={recorderPreviewRef}
+                      controls
+                      src={recordedAudioUrl}
+                      onTimeUpdate={(event) => setCurrentPlaybackTime(event.currentTarget.currentTime)}
+                    />
+                  </div>
+                ) : null}
+
+                {loading ? (
+                  <div className="card loading-card reveal">
+                    <FiLoader className="spinner-icon" />
+                    <div>
+                      <h3>Transkripcija snimka je u toku</h3>
+                      <p>Obrada će automatski prikazati rezultat ispod čim se završi.</p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {error ? <p className="error reveal">{error}</p> : null}
+                {result?.source === "microphone" ? renderTranscriptionResult() : null}
+              </section>
+            ) : null}
+
+            {activePage === "discharge" ? (
+              <section className="panel reveal">
+                <div className="card discharge-hero">
+                  <div>
+                    <h1>Demo generator otpusne liste</h1>
+                    <p>
+                      Stranica pretvara transkript u strukturisan nacrt otpusne liste koji je spreman
+                      za lekarsku proveru i finalnu dopunu u bolnickom procesu.
+                    </p>
+                  </div>
+                  <span className="discharge-badge">Local Free Demo</span>
+                </div>
+
+                <div className="discharge-layout">
+                  <form
+                    className="card discharge-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      generateDischargeDraft();
+                    }}
+                  >
+                    <h2>Osnovni podaci pacijenta</h2>
+
+                    <div className="field">
+                      <label>Engine za generisanje</label>
+                      <div className="preset-grid">
+                        <button
+                          type="button"
+                          className={dischargeEngine === "ai" ? "preset-btn active" : "preset-btn"}
+                          onClick={() => setDischargeEngine("ai")}
+                          disabled={dischargeLoading}
+                        >
+                          AI model
+                        </button>
+                        <button
+                          type="button"
+                          className={dischargeEngine === "rule" ? "preset-btn active" : "preset-btn"}
+                          onClick={() => setDischargeEngine("rule")}
+                          disabled={dischargeLoading}
+                        >
+                          Rule-based
+                        </button>
                       </div>
-                      <span className={`job-pill ${job.status}`}>{job.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </section>
-        ) : null}
+                    </div>
 
-        {activePage === "settings" ? (
-          <section className="panel reveal">
-            <h1>Settings</h1>
-            <form className="card settings-form" onSubmit={handleSettingsSave}>
-              <div className="field">
-                <label htmlFor="settings-api-url">
-                  <FiSettings /> Backend API URL
-                </label>
-                <input
-                  id="settings-api-url"
-                  type="text"
-                  value={settingsForm.apiBaseUrl}
-                  onChange={(event) =>
-                    setSettingsForm((prev) => ({
-                      ...prev,
-                      apiBaseUrl: event.target.value,
-                    }))
-                  }
-                  placeholder="http://localhost:8000"
-                />
-              </div>
+                    <div className="field">
+                      <label>AI korekcija transkripta</label>
+                      <div className="export-actions">
+                        <button
+                          type="button"
+                          className="ghost-btn"
+                          onClick={runTranscriptCorrections}
+                          disabled={correctionLoading || !result?.text}
+                        >
+                          {correctionLoading ? (
+                            <>
+                              <FiLoader className="inline-spin" /> Analiziram tekst...
+                            </>
+                          ) : (
+                            <>
+                              <FiFileText /> AI ispravi transkript
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={useCorrectedTranscript}
+                          className={useCorrectedTranscript ? "toggle-control on" : "toggle-control"}
+                          onClick={() => setUseCorrectedTranscript((current) => !current)}
+                          disabled={!correctedTranscript}
+                        >
+                          <span className="toggle-track">
+                            <span className="toggle-thumb" />
+                          </span>
+                          <span className="toggle-text">Koristi korigovani tekst za draft</span>
+                        </button>
+                      </div>
+                      {correctionInfo?.engine ? <span className="source-chip">Correction engine: {correctionInfo.engine}</span> : null}
+                      {correctionInfo?.qualityNotes ? <span className="source-chip">Notes: {correctionInfo.qualityNotes}</span> : null}
+                      {correctionInfo?.aiError ? <span className="source-chip">AI warning: {correctionInfo.aiError}</span> : null}
+                      {correctionError ? <p className="error">{correctionError}</p> : null}
+                    </div>
 
-              <div className="field">
-                <label htmlFor="settings-language">Podrazumevani jezik</label>
-                <select
-                  id="settings-language"
-                  value={settingsForm.defaultLanguage}
-                  onChange={(event) =>
-                    setSettingsForm((prev) => ({
-                      ...prev,
-                      defaultLanguage: event.target.value,
-                    }))
-                  }
-                >
-                  {LANGUAGE_OPTIONS.map((option) => (
-                    <option key={`settings-${option.value || "auto"}`} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                    <div className="field">
+                      <label htmlFor="patient-name">Ime i prezime</label>
+                      <input
+                        id="patient-name"
+                        type="text"
+                        value={dischargeForm.patientName}
+                        onChange={(event) =>
+                          setDischargeForm((prev) => ({
+                            ...prev,
+                            patientName: event.target.value,
+                          }))
+                        }
+                        placeholder="npr. Petar Petrovic"
+                      />
+                    </div>
 
-              <div className="field">
-                <label>Tema paleta</label>
-                <div className="preset-grid">
-                  {THEME_PRESETS.map((preset) => (
-                    <button
-                      type="button"
-                      key={preset.value}
-                      className={settingsForm.themePreset === preset.value ? "preset-btn active" : "preset-btn"}
-                      onClick={() => {
-                        setThemePreset(preset.value);
+                    <div className="field">
+                      <label htmlFor="patient-id">Pacijent ID / broj istorije</label>
+                      <input
+                        id="patient-id"
+                        type="text"
+                        value={dischargeForm.patientId}
+                        onChange={(event) =>
+                          setDischargeForm((prev) => ({
+                            ...prev,
+                            patientId: event.target.value,
+                          }))
+                        }
+                        placeholder="npr. HIS-2026-00125"
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="doctor-name">Lekar</label>
+                      <input
+                        id="doctor-name"
+                        type="text"
+                        value={dischargeForm.doctorName}
+                        onChange={(event) =>
+                          setDischargeForm((prev) => ({
+                            ...prev,
+                            doctorName: event.target.value,
+                          }))
+                        }
+                        placeholder="npr. Dr Dimitrije Milenković"
+                      />
+                    </div>
+
+                    <div className="field">
+                      <label htmlFor="department">Odeljenje</label>
+                      <input
+                        id="department"
+                        type="text"
+                        value={dischargeForm.department}
+                        onChange={(event) =>
+                          setDischargeForm((prev) => ({
+                            ...prev,
+                            department: event.target.value,
+                          }))
+                        }
+                        placeholder="npr. Interno odeljenje"
+                      />
+                    </div>
+
+                    <div className="discharge-date-row">
+                      <div className="field">
+                        <label htmlFor="admission-date">Datum prijema</label>
+                        <input
+                          id="admission-date"
+                          type="text"
+                          value={dischargeForm.admissionDate}
+                          onChange={(event) =>
+                            setDischargeForm((prev) => ({
+                              ...prev,
+                              admissionDate: event.target.value,
+                            }))
+                          }
+                          placeholder="YYYY-MM-DD"
+                        />
+                      </div>
+
+                      <div className="field">
+                        <label htmlFor="discharge-date">Datum otpusta</label>
+                        <input
+                          id="discharge-date"
+                          type="text"
+                          value={dischargeForm.dischargeDate}
+                          onChange={(event) =>
+                            setDischargeForm((prev) => ({
+                              ...prev,
+                              dischargeDate: event.target.value,
+                            }))
+                          }
+                          placeholder="YYYY-MM-DD"
+                        />
+                      </div>
+                    </div>
+
+                    <p className="discharge-supporting-text">
+                      {result?.text
+                        ? `Aktivni transkript: ${result.fileName || "trenutni audio"}`
+                        : "Nema aktivnog transkripta. Prvo uradi transkripciju na stranici Transkripcija ili Snimanje."}
+                    </p>
+                    {correctedTranscript ? (
+                      <p className="discharge-supporting-text">
+                        Aktivni izvor za draft: {useCorrectedTranscript ? "AI korigovan transkript" : "Original transkript"}
+                      </p>
+                    ) : null}
+
+                    <button type="submit" className="primary-btn" disabled={dischargeLoading || !result?.text}>
+                      {dischargeLoading ? (
+                        <>
+                          <FiLoader className="inline-spin" /> {dischargeEngine === "ai" ? "Generisem AI draft..." : "Generisem rule draft..."}
+                        </>
+                      ) : (
+                        <>
+                          <FiFileText /> Generisi otpusnu listu
+                        </>
+                      )}
+                    </button>
+
+                    {dischargeError ? <p className="error">{dischargeError}</p> : null}
+                  </form>
+
+                  <div className="card discharge-editor">
+                    <div className="title-row">
+                      <h2>Draft otpusne liste</h2>
+                      <button
+                        type="button"
+                        className="ghost-btn"
+                        onClick={exportDischargeDraftTxt}
+                        disabled={!dischargeDocumentText.trim()}
+                      >
+                        <FiDownload /> Export TXT
+                      </button>
+                    </div>
+
+                    {!dischargeDraft?.fields ? (
+                      <p className="discharge-empty">
+                        Kada kliknes <strong>Generisi otpusnu listu</strong>, ovde ces dobiti editable demo dokument.
+                      </p>
+                    ) : (
+                      <div className="discharge-fields">
+                        <div className="discharge-meta">
+                          <span>{dischargeDraft.document_title || "Demo Otpusna Lista"}</span>
+                          <span>{dischargeDraft.generated_at ? formatDate(dischargeDraft.generated_at) : ""}</span>
+                          <span>{dischargeDraft.engine || "engine:n/a"}</span>
+                        </div>
+
+                        <p className="disclaimer-note">{dischargeDraft.disclaimer}</p>
+                        {dischargeDraft.quality_notes ? (
+                          <p className="source-chip">AI quality notes: {dischargeDraft.quality_notes}</p>
+                        ) : null}
+                        {Array.isArray(correctionItems) && correctionItems.length > 0 ? (
+                          <div className="correction-list">
+                            <h3>Predložene korekcije transkripta</h3>
+                            <ul>
+                              {correctionItems.map((item, index) => (
+                                <li key={`${item.original}-${item.suggested}-${index}`}>
+                                  <strong>{item.original}</strong> → <strong>{item.suggested}</strong>{" "}
+                                  {item.reason ? <span>({item.reason})</span> : null}{" "}
+                                  {typeof item.confidence === "number"
+                                    ? <em>{`${(item.confidence * 100).toFixed(0)}%`}</em>
+                                    : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+
+                        <div className="field">
+                          <label htmlFor="discharge-document">Dokument otpusne liste</label>
+                          <textarea
+                            id="discharge-document"
+                            className="discharge-document-box"
+                            rows={24}
+                            value={dischargeDocumentText}
+                            onChange={(event) => setDischargeDocumentText(event.target.value)}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {activePage === "history" ? (
+              <section className="panel reveal">
+                <div className="title-row">
+                  <h1>Istorija transkripcije</h1>
+                  {history.length > 0 ? (
+                    <button type="button" className="ghost-btn" onClick={clearHistory}>
+                      Obrisi istoriju
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="history-layout">
+                  <div className="card history-list">
+                    {history.length === 0 ? (
+                      <p>Još uvek nema sačuvanih transkripata.</p>
+                    ) : (
+                      history.map((item) => (
+                        <button
+                          type="button"
+                          key={item.id}
+                          className={selectedHistoryId === item.id ? "history-item active" : "history-item"}
+                          onClick={() => setSelectedHistoryId(item.id)}
+                        >
+                          <strong>{item.fileName || "Audio file"}</strong>
+                          <span>{formatDate(item.createdAt)}</span>
+                          <span className="history-lang">Jezik: {item.detected_language || "auto"}</span>
+                          <p>{item.text?.slice(0, 120) || "(prazno)"}...</p>
+                        </button>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="card history-detail">
+                    {selectedHistory ? (
+                      <>
+                        <div className="title-row">
+                          <h2>{selectedHistory.fileName}</h2>
+                          <div className="export-actions">
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              onClick={() => useHistoryRecordForDischarge(selectedHistory)}
+                            >
+                              <FiFileText /> Otpusna lista
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              onClick={() => exportTranscript(selectedHistory, "txt")}
+                            >
+                              <FiDownload /> TXT
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              onClick={() => exportTranscript(selectedHistory, "srt")}
+                            >
+                              <FiDownload /> SRT
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-btn"
+                              onClick={() => exportTranscript(selectedHistory, "vtt")}
+                            >
+                              <FiDownload /> VTT
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="history-meta">
+                          <FiClock /> {formatDate(selectedHistory.createdAt)}
+                        </p>
+                        <p className="transcript-text">{selectedHistory.text || "(prazan transkript)"}</p>
+
+                        <h3>Segmenti</h3>
+                        {Array.isArray(selectedHistory.segments) && selectedHistory.segments.length > 0 ? (
+                          <ul className="segments">
+                            {selectedHistory.segments.map((segment, index) => (
+                              <li key={`${selectedHistory.id}-${index}`}>
+                                <div className="segment-meta">
+                                  <span>{formatTime(segment.start)}</span>
+                                  <span>{formatTime(segment.end)}</span>
+                                </div>
+                                <p>{segment.text}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>Nema segmenata.</p>
+                        )}
+                      </>
+                    ) : (
+                      <p>Izaberi transcript sa leve strane.</p>
+                    )}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {activePage === "jobs" ? (
+              <section className="panel reveal">
+                <h1>Jobs status</h1>
+                <div className="card">
+                  {jobs.length === 0 ? (
+                    <p>Trenutno nema job-ova. Pokreni transkripciju da vidiš queue.</p>
+                  ) : (
+                    <ul className="jobs-list">
+                      {jobs.map((job) => (
+                        <li key={job.id}>
+                          <div>
+                            <strong>{job.fileName}</strong>
+                            <p>{formatDate(job.updatedAt)}</p>
+                          </div>
+                          <span className={`job-pill ${job.status}`}>{job.status}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </section>
+            ) : null}
+
+            {activePage === "settings" ? (
+              <section className="panel reveal">
+                <h1>Settings</h1>
+                <form className="card settings-form" onSubmit={handleSettingsSave}>
+                  <div className="field">
+                    <label htmlFor="settings-api-url">
+                      <FiSettings /> Backend API URL
+                    </label>
+                    <input
+                      id="settings-api-url"
+                      type="text"
+                      value={settingsForm.apiBaseUrl}
+                      onChange={(event) =>
                         setSettingsForm((prev) => ({
                           ...prev,
-                          themePreset: preset.value,
-                        }));
-                      }}
+                          apiBaseUrl: event.target.value,
+                        }))
+                      }
+                      placeholder="http://localhost:8000"
+                    />
+                  </div>
+
+                  <div className="field">
+                    <label htmlFor="settings-language">Podrazumevani jezik</label>
+                    <select
+                      id="settings-language"
+                      value={settingsForm.defaultLanguage}
+                      onChange={(event) =>
+                        setSettingsForm((prev) => ({
+                          ...prev,
+                          defaultLanguage: event.target.value,
+                        }))
+                      }
                     >
-                      {preset.label}
-                    </button>
-                  ))}
+                      {LANGUAGE_OPTIONS.map((option) => (
+                        <option key={`settings-${option.value || "auto"}`} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="field">
+                    <label>Tema paleta</label>
+                    <div className="preset-grid">
+                      {THEME_PRESETS.map((preset) => (
+                        <button
+                          type="button"
+                          key={preset.value}
+                          className={settingsForm.themePreset === preset.value ? "preset-btn active" : "preset-btn"}
+                          onClick={() => {
+                            setThemePreset(preset.value);
+                            setSettingsForm((prev) => ({
+                              ...prev,
+                              themePreset: preset.value,
+                            }));
+                          }}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={settingsForm.defaultWordTimestamps}
+                    className={settingsForm.defaultWordTimestamps ? "toggle-control on" : "toggle-control"}
+                    onClick={() =>
+                      setSettingsForm((prev) => ({
+                        ...prev,
+                        defaultWordTimestamps: !prev.defaultWordTimestamps,
+                      }))
+                    }
+                  >
+                    <span className="toggle-track">
+                      <span className="toggle-thumb" />
+                    </span>
+                    <span className="toggle-text">Podrazumevano uključi word timestamps</span>
+                  </button>
+
+                  <button type="submit" className="primary-btn">
+                    Sačuvaj settings
+                  </button>
+
+                  {settingsMessage ? <p className="success-message">{settingsMessage}</p> : null}
+                </form>
+              </section>
+            ) : null}
+
+            {activePage === "about" ? (
+              <section className="panel">
+                <div className="card reveal about-card">
+                  <h1>O projektu</h1>
+                  <p>
+                    SerbianWhisper Clinical Assistant je akademski projekat za demonstraciju primene
+                    veštačke inteligencije u bolničkom okruženju, sa fokusom na transkripciju i nacrt
+                    otpusne liste.
+                  </p>
+
+                  <div className="about-grid">
+                    <article className="about-item">
+                      <h3>Tim</h3>
+                      <p>Dimitrije Milenković</p>
+                      <p>Nemanja Vidić</p>
+                      <p>Stevan Stojanović</p>
+                    </article>
+                    <article className="about-item">
+                      <h3>Institucija</h3>
+                      <p>Univerzitet Metropolitan</p>
+                      <p>Projekat veštačke inteligencije</p>
+                    </article>
+                    <article className="about-item">
+                      <h3>Univerzitet</h3>
+                      <img
+                        className="about-metro-image"
+                        src="/metropolitan-20.png"
+                        alt="Univerzitet Metropolitan 20 godina"
+                      />
+                      <p>Univerzitet Metropolitan Beograd</p>
+                    </article>
+                    <article className="about-item">
+                      <h3>Modeli</h3>
+                      <ul className="about-list">
+                        <li>faster-whisper WhisperModel: small</li>
+                        <li>Inferencija: CPU + int8 quantization</li>
+                        <li>VAD filter + beam size 5</li>
+                        <li>Rule-based local discharge draft engine</li>
+                      </ul>
+                    </article>
+                    <article className="about-item">
+                      <h3>Cilj sistema</h3>
+                      <p>
+                        Ubrzanje pripreme kliničke dokumentacije uz obaveznu stručnu proveru pre finalnog
+                        izdavanja otpusne liste.
+                      </p>
+                    </article>
+                  </div>
                 </div>
-              </div>
-
-              <button
-                type="button"
-                role="switch"
-                aria-checked={settingsForm.defaultWordTimestamps}
-                className={settingsForm.defaultWordTimestamps ? "toggle-control on" : "toggle-control"}
-                onClick={() =>
-                  setSettingsForm((prev) => ({
-                    ...prev,
-                    defaultWordTimestamps: !prev.defaultWordTimestamps,
-                  }))
-                }
-              >
-                <span className="toggle-track">
-                  <span className="toggle-thumb" />
-                </span>
-                <span className="toggle-text">Podrazumevano ukljuci word timestamps</span>
-              </button>
-
-              <button type="submit" className="primary-btn">
-                Sacuvaj settings
-              </button>
-
-              {settingsMessage ? <p className="success-message">{settingsMessage}</p> : null}
-            </form>
-          </section>
-        ) : null}
-
-        {activePage === "about" ? (
-          <section className="panel">
-            <div className="card reveal about-card">
-              <h1>O projektu</h1>
-              <p>
-                SebianWhisper aplikacija je minimalisticka web aplikacija za lokalnu transkripciju
-                audio fajlova koristeci FastAPI backend i Faster-Whisper model.
-              </p>
-
-              <div className="about-grid">
-                <article className="about-item">
-                  <h3>Autor</h3>
-                  <p>Dimitrije Milenkovic</p>
-                </article>
-                <article className="about-item">
-                  <h3>Stack</h3>
-                  <p>React + Vite (frontend), Python FastAPI + Faster-Whisper (backend)</p>
-                </article>
-                <article className="about-item">
-                  <h3>Cilj</h3>
-                  <p>Brza i citljiva transkripcija sa segmentima i opcionalnim word timestampovima.</p>
-                </article>
-                <article className="about-item">
-                  <h3>Local-first</h3>
-                  <p>Model radi na server strani u CPU modu, optimizovano za lokalni razvoj na Mac-u.</p>
-                </article>
-              </div>
-            </div>
-          </section>
-        ) : null}
+              </section>
+            ) : null}
+          </div>
+        </div>
       </main>
     </div>
   );
